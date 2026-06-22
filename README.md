@@ -16,7 +16,7 @@ Implemented models:
 - `ModelInterface.h`: shared model interface and factory definitions
 - `cli_main.cpp`: command-line entry
 - `build-qt/gui-src/`: Qt desktop UI source
-- `启动模型可视化.cmd`: Windows launcher for the desktop app
+- `Mathine Learning.cmd`: Windows launcher for the desktop app
 
 ## Usage
 
@@ -38,7 +38,7 @@ The CLI supports:
 After building the Qt target, start the desktop application:
 
 ```powershell
-.\启动模型可视化.cmd
+.\Mathine Learning.cmd
 ```
 
 The desktop application provides three tabs:
