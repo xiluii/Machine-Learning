@@ -366,6 +366,19 @@ public:
     }
 };
 
+static double estimateRemainingSeconds(
+    const std::chrono::steady_clock::time_point& started,
+    int completed,
+    int total) {
+    if (completed <= 0 || total <= 0 || completed >= total) {
+        return completed >= total ? 0.0 : -1.0;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const double elapsed = std::chrono::duration<double>(now - started).count();
+    const double rate = elapsed / static_cast<double>(completed);
+    return rate * static_cast<double>(total - completed);
+}
+
 // ==================== 妯″瀷宸ュ巶鍓嶅悜澹版槑 ====================
 
 // 鍓嶅悜澹版槑锛堝疄鐜板湪鎵€鏈夋ā鍨嬬被瀹氫箟涔嬪悗锛?
@@ -459,6 +472,8 @@ public:
         
         std::mt19937 rng(std::chrono::system_clock::now().time_since_epoch().count());
         const int batchSize = SVM_BATCH_SIZE;  // Mini-batch 澶у皬 (鏉ヨ嚜鍏ㄥ眬閰嶇疆)
+        const auto started = std::chrono::steady_clock::now();
+        const int totalUnits = std::max(1, epochs * static_cast<int>(images.size()));
         
         for (int epoch = 0; epoch < epochs; ++epoch) {
             double totalLoss = 0.0;
@@ -537,6 +552,10 @@ public:
                 
                 // 鏄剧ず杩涘害鏉?
                 ProgressBar::show(batchEnd, images.size(), "Processing data");
+                const int completedUnits = epoch * static_cast<int>(images.size()) + static_cast<int>(batchEnd);
+                reportProgress(completedUnits, totalUnits,
+                               static_cast<double>(completedUnits) / totalUnits,
+                               estimateRemainingSeconds(started, completedUnits, totalUnits));
             }
             
             ProgressBar::finish();
@@ -813,6 +832,8 @@ public:
         std::cout << "\nFCNN training started (" << epochs << " epochs, batch_size=" << FCNN_BATCH_SIZE << ")..." << std::endl;
         std::cout << "  Network: [" << INPUT_SIZE << "] -> [" << FCNN_HIDDEN1_SIZE
                   << "] -> [" << FCNN_HIDDEN2_SIZE << "] -> [" << OUTPUT_SIZE << "]" << std::endl;
+        const auto started = std::chrono::steady_clock::now();
+        const int totalUnits = std::max(1, epochs * static_cast<int>(images.size()));
         
         // 妫€鏌ユ槸鍚﹀凡鍔犺浇鍙傛暟锛屽惁鍒欐墠杩涜He鍒濆鍖?
         bool isNewTraining = W1.empty();
@@ -867,6 +888,10 @@ public:
                 size_t batchEnd = std::min(batchStart + FCNN_BATCH_SIZE, images.size());
                 int batchSize = batchEnd - batchStart;
                 ProgressBar::show(batchEnd, images.size(), "Processing data");
+                const int completedUnits = epoch * static_cast<int>(images.size()) + static_cast<int>(batchEnd);
+                reportProgress(completedUnits, totalUnits,
+                               static_cast<double>(completedUnits) / totalUnits,
+                               estimateRemainingSeconds(started, completedUnits, totalUnits));
                 
                 // ==================== 鎵瑰鐞嗘搴︾疮绉?====================
                 std::vector<std::vector<double>> dW1(FCNN_HIDDEN1_SIZE, std::vector<double>(INPUT_SIZE, 0.0));
@@ -1326,6 +1351,8 @@ public:
               const std::vector<int>& labels, int epochs) override {
         std::cout << "\nCNN training started (" << epochs << " epochs, batch_size=" << CNN_BATCH_SIZE << ")..." << std::endl;
         std::cout << "  Network: 2 feature stages + 2 pooling stages + dense classifier" << std::endl;
+        const auto started = std::chrono::steady_clock::now();
+        const int totalUnits = std::max(1, epochs * static_cast<int>(images.size()));
         
         // 妫€鏌ユ槸鍚﹀凡鍔犺浇鍙傛暟锛屽惁鍒欐墠杩涜He鍒濆鍖?
         bool isNewTraining = fcWeights.empty() || fcWeights[0].empty();
@@ -1361,6 +1388,10 @@ public:
                 
                 // 鏄剧ず杩涘害鏉?
                 ProgressBar::show(batchEnd, images.size(), "Processing data");
+                const int completedUnits = epoch * static_cast<int>(images.size()) + static_cast<int>(batchEnd);
+                reportProgress(completedUnits, totalUnits,
+                               static_cast<double>(completedUnits) / totalUnits,
+                               estimateRemainingSeconds(started, completedUnits, totalUnits));
             
                 for (size_t idx = batchStart; idx < batchEnd; ++idx) {
                     const auto& image = images[idx];
@@ -1937,6 +1968,8 @@ public:
         std::cout << "  Trees: decision-tree ensemble | max depth: " << RF_MAX_DEPTH
                   << " | features per split: " << RF_FEATURES_PER_SPLIT << std::endl;
         std::cout << "  Initialization: bootstrap over full training set + random feature subsets | evaluation: vote average" << std::endl;
+        const auto started = std::chrono::steady_clock::now();
+        const int totalUnits = std::max(1, RF_NUM_TREES);
 
         std::vector<int> allSampleIndices(images.size());
         std::iota(allSampleIndices.begin(), allSampleIndices.end(), 0);
@@ -1974,6 +2007,10 @@ public:
                 }
 
                 ProgressBar::show(forest.size(), RF_NUM_TREES, "Building forest");
+                const int completedUnits = static_cast<int>(forest.size());
+                reportProgress(completedUnits, totalUnits,
+                               static_cast<double>(completedUnits) / totalUnits,
+                               estimateRemainingSeconds(started, completedUnits, totalUnits));
             }
 
             ProgressBar::finish();
@@ -2274,6 +2311,7 @@ public:
         std::cout << "\nKNN training started (" << epochs << " epochs, batch_size=" << KNN_BATCH_SIZE
                   << ", k=" << kValue << ")..." << std::endl;
         std::cout << "  Initialization: mini-batch prototype construction | max prototypes: " << KNN_MAX_PROTOTYPES << std::endl;
+        const auto started = std::chrono::steady_clock::now();
 
         prototypes.clear();
         prototypeLabels.clear();
@@ -2282,6 +2320,7 @@ public:
 
         std::vector<size_t> indices(images.size());
         std::iota(indices.begin(), indices.end(), 0);
+        const int totalUnits = std::max(1, epochs * static_cast<int>(indices.size()));
 
         for (int epoch = 0; epoch < epochs; ++epoch) {
             std::shuffle(indices.begin(), indices.end(), rng);
@@ -2313,6 +2352,10 @@ public:
                 }
 
                 ProgressBar::show(batchEnd, indices.size(), "Building prototypes");
+                const int completedUnits = epoch * static_cast<int>(indices.size()) + static_cast<int>(batchEnd);
+                reportProgress(completedUnits, totalUnits,
+                               static_cast<double>(completedUnits) / totalUnits,
+                               estimateRemainingSeconds(started, completedUnits, totalUnits));
             }
 
             ProgressBar::finish();
@@ -2567,6 +2610,8 @@ public:
         std::cout << "\nLogistic regression training started (" << epochs << " epochs, batch_size=" << LR_BATCH_SIZE << ")..." << std::endl;
         std::cout << "  Network: [" << INPUT_SIZE << "] -> Softmax -> [" << NUM_CLASSES << "]" << std::endl;
         std::cout << "  Initialization: Xavier init | Optimizer: SGD | Regularization: L2(" << LR_REGULARIZATION_L2 << ")\n" << std::endl;
+        const auto started = std::chrono::steady_clock::now();
+        const int totalUnits = std::max(1, epochs * static_cast<int>(images.size()));
         
         for (int epoch = 0; epoch < epochs; ++epoch) {
             double totalLoss = 0.0;
@@ -2578,6 +2623,10 @@ public:
                 int batchSize = batchEnd - batchStart;
                 
                 ProgressBar::show(batchEnd, images.size(), "Processing data");
+                const int completedUnits = epoch * static_cast<int>(images.size()) + static_cast<int>(batchEnd);
+                reportProgress(completedUnits, totalUnits,
+                               static_cast<double>(completedUnits) / totalUnits,
+                               estimateRemainingSeconds(started, completedUnits, totalUnits));
                 
                 // 绱Н姊害
                 std::vector<std::vector<double>> dWeights(NUM_CLASSES, 

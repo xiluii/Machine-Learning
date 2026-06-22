@@ -120,6 +120,8 @@ TrainResult AppBackend::trainModel(const TrainOptions& options) {
         model->initWeights();
     }
 
+    model->setProgressCallback(options.progressCallback);
+
     const auto started = std::chrono::steady_clock::now();
     model->train(dataset.images, dataset.labels, options.epochs);
     model->saveParams(resolvePath(paramFile));

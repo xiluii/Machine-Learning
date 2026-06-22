@@ -37,6 +37,7 @@
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrent>
 
+#include <algorithm>
 #include <cmath>
 
 class LoadingSpinner : public QWidget {
@@ -241,10 +242,24 @@ private:
     void drawArrow(QPainter& painter, const QPointF& start, const QPointF& end, const QColor& color = QColor("#585d66")) {
         painter.save();
         painter.setPen(QPen(color, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        painter.drawLine(start, end);
+        painter.setBrush(color);
         const qreal arrowSize = 8.0;
-        painter.drawLine(end, QPointF(end.x() - arrowSize, end.y() - arrowSize * 0.55));
-        painter.drawLine(end, QPointF(end.x() - arrowSize, end.y() + arrowSize * 0.55));
+        const qreal dx = end.x() - start.x();
+        const qreal dy = end.y() - start.y();
+        const qreal length = std::hypot(dx, dy);
+        if (length > 0.0) {
+            const qreal ux = dx / length;
+            const qreal uy = dy / length;
+            const qreal px = -uy;
+            const qreal py = ux;
+            const QPointF arrowBase(end.x() - ux * arrowSize, end.y() - uy * arrowSize);
+            const QPointF leftWing(arrowBase.x() + px * arrowSize * 0.55, arrowBase.y() + py * arrowSize * 0.55);
+            const QPointF rightWing(arrowBase.x() - px * arrowSize * 0.55, arrowBase.y() - py * arrowSize * 0.55);
+            painter.drawLine(start, arrowBase);
+            painter.drawPolygon(QPolygonF() << end << leftWing << rightWing);
+        } else {
+            painter.drawPoint(end);
+        }
         painter.restore();
     }
 
@@ -697,9 +712,14 @@ private:
         descLabel->setWordWrap(true);
         descLabel->setStyleSheet("color:#a5b4cc;");
         auto* progress = new QProgressBar(card);
-        progress->setTextVisible(false);
-        progress->setRange(0,1);
+        progress->setTextVisible(true);
+        progress->setFormat("%p%");
+        progress->setRange(0,100);
         progress->setValue(0);
+        auto* progressLabel = new QLabel("Idle", card);
+        progressLabel->setStyleSheet("color:#a5b4cc;");
+        auto* etaLabel = new QLabel("ETA: --", card);
+        etaLabel->setStyleSheet("color:#8d9ab0;");
         auto* runButton = new QPushButton("Start Training", card);
         runButton->setObjectName("primary");
 
@@ -713,6 +733,8 @@ private:
         form->addWidget(paramLabel, 3, 0, 1, 3);
         form->addWidget(descLabel, 4, 0, 1, 3);
         form->addWidget(progress, 5, 0, 1, 3);
+        form->addWidget(progressLabel, 6, 0, 1, 2);
+        form->addWidget(etaLabel, 6, 2);
 
         auto* outputCard = new QFrame(page);
         outputCard->setObjectName("panel");
@@ -744,17 +766,42 @@ private:
             options.modelType = static_cast<ModelFactory::ModelType>(modelCombo->currentData().toInt());
             options.epochs = epochsSpin->value();
             options.continueFromExisting = continueExisting->isChecked();
-            progress->setRange(0,0);
+            progress->setRange(0,100);
+            progress->setValue(0);
+            progress->setFormat("%p%");
+            progressLabel->setText("Preparing training...");
+            etaLabel->setText("ETA: estimating...");
             runButton->setEnabled(false);
             output->appendPlainText(QString("Starting %1 ...").arg(modelCombo->currentText()));
+            options.progressCallback = [progress, progressLabel, etaLabel](int current, int total, double ratio, double etaSeconds) {
+                QMetaObject::invokeMethod(progress, [progress, progressLabel, etaLabel, current, total, ratio, etaSeconds]() {
+                    const int boundedPercent = std::clamp(static_cast<int>(std::round(ratio * 100.0)), 0, 100);
+                    progress->setValue(boundedPercent);
+                    progress->setFormat(QString("%1% (%2/%3)").arg(boundedPercent).arg(current).arg(total));
+                    progressLabel->setText(QString("Training in progress: %1 / %2").arg(current).arg(total));
+                    if (etaSeconds >= 0.0) {
+                        int remainingSeconds = static_cast<int>(std::round(etaSeconds));
+                        int minutes = remainingSeconds / 60;
+                        int seconds = remainingSeconds % 60;
+                        etaLabel->setText(QString("ETA: %1:%2")
+                                              .arg(minutes, 2, 10, QLatin1Char('0'))
+                                              .arg(seconds, 2, 10, QLatin1Char('0')));
+                    } else {
+                        etaLabel->setText("ETA: estimating...");
+                    }
+                }, Qt::QueuedConnection);
+            };
             watcher->setFuture(QtConcurrent::run([options]() {
                 AppBackend backend;
                 return backend.trainModel(options);
             }));
         });
         QObject::connect(watcher, &QFutureWatcher<TrainResult>::finished, page, [=]() {
-            progress->setRange(0,1);
-            progress->setValue(1);
+            progress->setRange(0,100);
+            progress->setValue(100);
+            progress->setFormat("100%");
+            progressLabel->setText("Training completed");
+            etaLabel->setText("ETA: 00:00");
             runButton->setEnabled(true);
             output->appendPlainText(QString::fromStdString(watcher->result().summary));
             output->appendPlainText("");

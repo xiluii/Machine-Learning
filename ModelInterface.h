@@ -148,6 +148,13 @@ public:
     virtual void evaluateAndReport(
         const std::vector<std::vector<double>>& images,
         const std::vector<int>& labels) = 0;
+
+protected:
+    void reportProgress(int current, int total, double progress, double etaSeconds) const {
+        if (progressCallback) {
+            progressCallback(current, total, progress, etaSeconds);
+        }
+    }
 };
 
 // ============ 模型工厂 ============

@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <string>
+#include <functional>
 #include <vector>
 
 struct RocPoint {
@@ -23,6 +24,7 @@ struct TrainOptions {
     ModelFactory::ModelType modelType = ModelFactory::SVM;
     int epochs = 1;
     bool continueFromExisting = false;
+    std::function<void(int, int, double, double)> progressCallback;
 };
 
 struct TrainResult {
