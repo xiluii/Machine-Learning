@@ -1,0 +1,81 @@
+QMainWindow, QWidget {
+    background: #1e1f22;
+    color: #dcddde;
+    font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    font-size: 13px;
+}
+QToolTip {
+    background: #202225;
+    color: #dcddde;
+    border: 1px solid #3a3d43;
+}
+QTabWidget::pane {
+    border: 1px solid #32353b;
+    border-radius: 14px;
+    background: #202225;
+}
+QTabBar::tab {
+    background: #191b1f;
+    color: #9ea3aa;
+    padding: 10px 16px;
+    margin-right: 6px;
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+    border: 1px solid #2f3238;
+}
+QTabBar::tab:selected {
+    background: #26282d;
+    color: #e7e9ec;
+    border-bottom: 2px solid #a78bfa;
+}
+QFrame#panel {
+    background: #202225;
+    border: 1px solid #32353b;
+    border-radius: 14px;
+}
+QPushButton {
+    min-height: 36px;
+    border-radius: 8px;
+    padding: 0 14px;
+    border: 1px solid #353941;
+    background: #26282d;
+    color: #d5d8dc;
+}
+QPushButton#primary {
+    background: #5b4fa6;
+    border: 1px solid #7366c0;
+    color: #f3f4f6;
+    font-weight: 600;
+}
+QPushButton:hover {
+    background: #2d3036;
+}
+QPushButton#primary:hover {
+    background: #695cb8;
+}
+QComboBox, QSpinBox, QPlainTextEdit, QListWidget {
+    background: #191b1f;
+    border: 1px solid #353941;
+    border-radius: 8px;
+    padding: 6px 8px;
+    color: #dcddde;
+}
+QComboBox QAbstractItemView, QListWidget {
+    background: #191b1f;
+    border: 1px solid #353941;
+    selection-background-color: #4c566a;
+    selection-color: #f3f4f6;
+}
+QLabel {
+    background: transparent;
+}
+QProgressBar {
+    min-height: 8px;
+    border: none;
+    border-radius: 4px;
+    background: #15171b;
+}
+QProgressBar::chunk {
+    border-radius: 4px;
+    background: #7c6ee6;
+}
