@@ -22,15 +22,15 @@
 #include <windows.h>
 #endif
 
-// ==================== 鍏ㄥ眬瓒呭弬鏁伴厤缃?====================
+// ==================== Global Hyperparameters ====================
 
-// SVM 瓒呭弬鏁?
+// SVM hyperparameters
 const double SVM_LEARNING_RATE = 1e-3;          
 const double SVM_REGULARIZATION_C = 0.01;     
 const int SVM_EPOCHS = 5;                     
 const int SVM_BATCH_SIZE = 64;
 
-// FCNN 瓒呭弬鏁?
+// FCNN hyperparameters
 const double FCNN_LEARNING_RATE = 1e-3;       
 const double FCNN_MOMENTUM = 0.9;            
 const int FCNN_EPOCHS = 5;                     
@@ -39,18 +39,18 @@ const int FCNN_HIDDEN1_SIZE = 256;
 const int FCNN_HIDDEN2_SIZE = 128;
 const int FCNN_INPUT_SIZE = 784;
 
-// CNN 瓒呭弬鏁?
+// CNN hyperparameters
 const double CNN_LEARNING_RATE = 1e-3;     
 const int CNN_EPOCHS = 15;                  
 const int CNN_BATCH_SIZE = 64;
 
-// 閫昏緫鍥炲綊 瓒呭弬鏁?
+// Logistic regression hyperparameters
 const double LR_LEARNING_RATE = 1e-3;    
 const double LR_REGULARIZATION_L2 = 0.0001;  
 const int LR_EPOCHS = 5;                  
 const int LR_BATCH_SIZE = 64;               
 
-// 闅忔満妫灄 瓒呭弬鏁?
+// Random forest hyperparameters
 const int RF_EPOCHS = 5;             
 const int RF_BATCH_SIZE = 64;                
 const int RF_NUM_TREES = 50;            
@@ -58,22 +58,22 @@ const int RF_MAX_DEPTH = 8;
 const int RF_MIN_SAMPLES_SPLIT = 8;     
 const int RF_FEATURES_PER_SPLIT = 28;       
 
-// K杩戦偦 瓒呭弬鏁?
+// KNN hyperparameters
 const int KNN_EPOCHS = 1;                    
 const int KNN_BATCH_SIZE = 64;             
 const int KNN_K = 5;              
 const int KNN_MAX_PROTOTYPES = 3000;   
 
-// ==================== 鏁版嵁鍔犺浇鍑芥暟 ====================
+// ==================== Dataset Loading ====================
 
-// 璇诲彇澶х搴?2浣嶆暣鏁帮紙MNIST鏂囦欢鏍煎紡锛?
+// Read a 32-bit big-endian integer from an MNIST file.
 int readBigEndianInt(std::ifstream& file) {
     uint32_t val;
     file.read(reinterpret_cast<char*>(&val), 4);
     return (val >> 24) | ((val >> 8) & 0xFF00) | ((val << 8) & 0xFF0000) | (val << 24);
 }
 
-// 璇诲彇MNIST鍥惧儚鏂囦欢
+// Read MNIST image data.
 std::vector<std::vector<double>> readImages(const std::string& filename, int& numImages) {
     std::ifstream file(filename, std::ios::binary);
     if (!file.is_open()) {
@@ -97,7 +97,7 @@ std::vector<std::vector<double>> readImages(const std::string& filename, int& nu
     return images;
 }
 
-// 璇诲彇MNIST鏍囩鏂囦欢
+// Read MNIST labels.
 std::vector<int> readLabels(const std::string& filename, int& numLabels) {
     std::ifstream file(filename, std::ios::binary);
     if (!file.is_open()) {
@@ -116,7 +116,7 @@ std::vector<int> readLabels(const std::string& filename, int& numLabels) {
     return labels;
 }
 
-// 鍐欏叆ROC鏁版嵁骞惰绠椾簩鍒嗙被AUC锛堟绫绘爣绛句负1锛?
+// Write ROC data and compute binary AUC for one-vs-rest evaluation.
 double writeRocDataAndComputeAUC(const std::vector<double>& scores,
                                  const std::vector<int>& binaryLabels,
                                  const std::string& rocFilename) {
@@ -343,7 +343,7 @@ Metrics buildMetricsSnapshot(IClassificationModel& model,
     return metrics;
 }
 
-// ==================== 杩涘害鏉℃樉绀?====================
+// ==================== Progress Display ====================
 
 class ProgressBar {
 public:
@@ -379,17 +379,16 @@ static double estimateRemainingSeconds(
     return rate * static_cast<double>(total - completed);
 }
 
-// ==================== 妯″瀷宸ュ巶鍓嶅悜澹版槑 ====================
+// ==================== Forward Declarations ====================
 
-// 鍓嶅悜澹版槑锛堝疄鐜板湪鎵€鏈夋ā鍨嬬被瀹氫箟涔嬪悗锛?
+// Model class declarations. Factory implementations appear later in the file.
 class SVMModel;
 class FCNNModel;
 class CNNModel;
 class RandomForestModel;
 class KNNModel;
 
-// ==================== SVM 妯″瀷瀹炵幇鍖呰鍣?====================
-// 锛堢畝鍖栫増锛屽疄闄呬娇鐢ㄦ椂鎸囧悜瀹屾暣鐨凷VM.cpp瀹炵幇锛?
+// ==================== SVM Model ====================
 
 class SVMModel : public IClassificationModel {
 public:
@@ -397,7 +396,7 @@ public:
     virtual Metrics testAndGetMetrics(const std::vector<std::vector<double>>& images, const std::vector<int>& labels) override { return buildMetricsSnapshot(*this, images, labels); }
 
 private:
-    // SVM鐩稿叧鎴愬憳鍙橀噺
+    // SVM parameters
     std::vector<std::vector<double>> weights;
     std::vector<double> biases;
     static const int NUM_CLASSES = 10;
@@ -471,7 +470,7 @@ public:
         std::cout << "\nSVM training started (" << epochs << " epochs, batch_size=" << SVM_BATCH_SIZE << ")..." << std::endl;
         
         std::mt19937 rng(std::chrono::system_clock::now().time_since_epoch().count());
-        const int batchSize = SVM_BATCH_SIZE;  // Mini-batch 澶у皬 (鏉ヨ嚜鍏ㄥ眬閰嶇疆)
+        const int batchSize = SVM_BATCH_SIZE;
         const auto started = std::chrono::steady_clock::now();
         const int totalUnits = std::max(1, epochs * static_cast<int>(images.size()));
         
@@ -479,23 +478,23 @@ public:
             double totalLoss = 0.0;
             int correctPredictions = 0;
             
-            // 澶勭悊 mini-batch 锛坆atch_size鏉ヨ嚜鍏ㄥ眬SVM_BATCH_SIZE閰嶇疆锛?
+            // Process one mini-batch.
             for (size_t batchStart = 0; batchStart < images.size(); batchStart += batchSize) {
                 size_t batchEnd = std::min(batchStart + batchSize, images.size());
                 
-                // 绱Нgradient鐢ㄤ簬mini-batch鏇存柊
+                // Accumulate gradients for this mini-batch.
                 std::vector<std::vector<double>> batchWeightGradients(NUM_CLASSES, 
                     std::vector<double>(INPUT_SIZE, 0.0));
                 std::vector<double> batchBiasGradients(NUM_CLASSES, 0.0);
                 double batchLoss = 0.0;
                 int batchCorrect = 0;
                 
-                // 澶勭悊batch鍐呯殑姣忎釜鏍锋湰
+                // Process each sample in the batch.
                 for (size_t idx = batchStart; idx < batchEnd; ++idx) {
                     const auto& image = images[idx];
                     int label = labels[idx];
                     
-                    // 鍓嶅悜浼犻€掞細璁＄畻鎵€鏈夌被鍒殑寰楀垎
+                    // Forward pass: compute class scores.
                     std::vector<double> scores(NUM_CLASSES);
                     for (int c = 0; c < NUM_CLASSES; ++c) {
                         scores[c] = biases[c];
@@ -504,7 +503,7 @@ public:
                         }
                     }
                     
-                    // 妫€鏌ラ娴嬫槸鍚︽纭?
+                    // Track training accuracy.
                     int predictedClass = 0;
                     for (int c = 1; c < NUM_CLASSES; ++c) {
                         if (scores[c] > scores[predictedClass]) predictedClass = c;
@@ -514,33 +513,33 @@ public:
                         correctPredictions++;
                     }
                     
-                    // 鍚堥〉鎹熷け锛圚inge Loss锛夌殑涓€瀵瑰褰㈠紡
+                    // One-vs-rest hinge loss.
                     for (int c = 0; c < NUM_CLASSES; ++c) {
                         int y = (c == label) ? 1 : -1;
                         double margin = y * scores[c];
                         
-                        // 姝ｇ‘鐨凥inge Loss锛氬嵆浣縨argin >= 1涔熻绠楁鍒欏寲姊害
+                        // Standard hinge loss term.
                         double loss = std::max(0.0, 1.0 - margin);
                         totalLoss += loss;
                         
-                        // 姊害璁＄畻锛氬寘鎷潪闆舵崯澶卞拰姝ｅ垯鍖栭」
+                        // Gradient includes hinge term and L2 regularization.
                         double gradient = 0.0;
                         if (margin < 1.0) {
-                            gradient = -y;  // 鍚堥〉鎹熷け姊害
+                            gradient = -y;
                         }
                         
-                        // 绱Н鏉冮噸姊害锛堟€绘槸鍖呭惈姝ｅ垯鍖栵級
+                        // Accumulate weight gradients.
                         for (int i = 0; i < INPUT_SIZE; ++i) {
                             batchWeightGradients[c][i] += (gradient * image[i] + 
                                 SVM_REGULARIZATION_C * weights[c][i]);
                         }
                         
-                        // 绱Н鍋忕疆姊害锛堟棤姝ｅ垯鍖栵級
+                        // Accumulate bias gradients.
                         batchBiasGradients[c] += gradient;
                     }
                 }
                 
-                // Mini-batch 鍚庤繘琛屾潈閲嶆洿鏂?
+                // Apply one SGD update after the batch.
                 for (int c = 0; c < NUM_CLASSES; ++c) {
                     for (int i = 0; i < INPUT_SIZE; ++i) {
                         weights[c][i] -= SVM_LEARNING_RATE * batchWeightGradients[c][i] / 
@@ -550,7 +549,7 @@ public:
                         static_cast<double>(batchEnd - batchStart);
                 }
                 
-                // 鏄剧ず杩涘害鏉?
+                // Report training progress.
                 ProgressBar::show(batchEnd, images.size(), "Processing data");
                 const int completedUnits = epoch * static_cast<int>(images.size()) + static_cast<int>(batchEnd);
                 reportProgress(completedUnits, totalUnits,
@@ -597,7 +596,7 @@ public:
                 scores[c] += weights[c][i] * image[i];
             }
         }
-        // 绠€鍗曠殑softmax
+        // Simple softmax normalization.
         double maxScore = *std::max_element(scores.begin(), scores.end());
         double sum = 0.0;
         for (auto& s : scores) {
@@ -699,7 +698,7 @@ public:
     }
 };
 
-// ==================== FCNN 妯″瀷瀹炵幇鍖呰鍣?====================
+// ==================== FCNN Model ====================
 
 class FCNNModel : public IClassificationModel {
 public:
@@ -712,7 +711,7 @@ private:
     static const int OUTPUT_SIZE = 10;
     static const int INPUT_SIZE = 784;
     
-    // 鏉冮噸鐭╅樀鍜屽亸缃?
+    // Dense layer weights and biases.
     std::vector<std::vector<double>> W1, W2, W3;
     std::vector<double> b1, b2, b3;
     
@@ -726,7 +725,7 @@ public:
     }
 
     void initWeights() override {
-        // 鏉冮噸鍦╰rain()鏂规硶涓垵濮嬪寲锛岃繖閲屾棤闇€鎿嶄綔
+        // Weights are initialized lazily in train().
         std::cout << "FCNN weights will be initialized in train()" << std::endl;
     }
 
@@ -744,33 +743,33 @@ public:
         b2.assign(FCNN_HIDDEN2_SIZE, 0.0);
         b3.assign(OUTPUT_SIZE, 0.0);
         
-        // 璇诲彇W1
+        // Read W1.
         for (int i = 0; i < FCNN_HIDDEN1_SIZE; ++i) {
             for (int j = 0; j < INPUT_SIZE; ++j) {
                 file >> W1[i][j];
             }
         }
-        // 璇诲彇b1
+        // Read b1.
         for (int i = 0; i < FCNN_HIDDEN1_SIZE; ++i) {
             file >> b1[i];
         }
-        // 璇诲彇W2
+        // Read W2.
         for (int i = 0; i < FCNN_HIDDEN2_SIZE; ++i) {
             for (int j = 0; j < FCNN_HIDDEN1_SIZE; ++j) {
                 file >> W2[i][j];
             }
         }
-        // 璇诲彇b2
+        // Read b2.
         for (int i = 0; i < FCNN_HIDDEN2_SIZE; ++i) {
             file >> b2[i];
         }
-        // 璇诲彇W3
+        // Read W3.
         for (int i = 0; i < OUTPUT_SIZE; ++i) {
             for (int j = 0; j < FCNN_HIDDEN2_SIZE; ++j) {
                 file >> W3[i][j];
             }
         }
-        // 璇诲彇b3
+        // Read b3.
         for (int i = 0; i < OUTPUT_SIZE; ++i) {
             file >> b3[i];
         }
@@ -786,40 +785,40 @@ public:
             return;
         }
         
-        // 淇濆瓨W1
+        // Write W1.
         for (int i = 0; i < FCNN_HIDDEN1_SIZE; ++i) {
             for (int j = 0; j < INPUT_SIZE; ++j) {
                 file << W1[i][j] << " ";
             }
             file << "\n";
         }
-        // 淇濆瓨b1
+        // Write b1.
         for (int i = 0; i < FCNN_HIDDEN1_SIZE; ++i) {
             file << b1[i] << " ";
         }
         file << "\n";
         
-        // 淇濆瓨W2
+        // Write W2.
         for (int i = 0; i < FCNN_HIDDEN2_SIZE; ++i) {
             for (int j = 0; j < FCNN_HIDDEN1_SIZE; ++j) {
                 file << W2[i][j] << " ";
             }
             file << "\n";
         }
-        // 淇濆瓨b2
+        // Write b2.
         for (int i = 0; i < FCNN_HIDDEN2_SIZE; ++i) {
             file << b2[i] << " ";
         }
         file << "\n";
         
-        // 淇濆瓨W3
+        // Write W3.
         for (int i = 0; i < OUTPUT_SIZE; ++i) {
             for (int j = 0; j < FCNN_HIDDEN2_SIZE; ++j) {
                 file << W3[i][j] << " ";
             }
             file << "\n";
         }
-        // 淇濆瓨b3
+        // Write b3.
         for (int i = 0; i < OUTPUT_SIZE; ++i) {
             file << b3[i] << " ";
         }
@@ -835,7 +834,7 @@ public:
         const auto started = std::chrono::steady_clock::now();
         const int totalUnits = std::max(1, epochs * static_cast<int>(images.size()));
         
-        // 妫€鏌ユ槸鍚﹀凡鍔犺浇鍙傛暟锛屽惁鍒欐墠杩涜He鍒濆鍖?
+        // If no weights were loaded, start from a fresh initialization.
         bool isNewTraining = W1.empty();
         
         if (isNewTraining) {
@@ -845,7 +844,7 @@ public:
         }
         std::cout << "  Loss: cross entropy\n" << std::endl;
         
-        // ==================== 鏉冮噸鍒濆鍖?(He鍒濆鍖?鎴?鍔犺浇宸叉湁鍙傛暟) ====================
+        // ==================== Weight Initialization ====================
         if (isNewTraining) {
             W1.assign(FCNN_HIDDEN1_SIZE, std::vector<double>(INPUT_SIZE));
             b1.assign(FCNN_HIDDEN1_SIZE, 0.0);
@@ -856,7 +855,7 @@ public:
             
             std::mt19937 rng(std::chrono::system_clock::now().time_since_epoch().count());
             
-            // He鍒濆鍖? std = sqrt(2.0 / input_size)
+            // He initialization: std = sqrt(2 / fan_in).
             double std_W1 = std::sqrt(2.0 / INPUT_SIZE);
             double std_W2 = std::sqrt(2.0 / FCNN_HIDDEN1_SIZE);
             double std_W3 = std::sqrt(2.0 / FCNN_HIDDEN2_SIZE);
@@ -870,8 +869,8 @@ public:
             for (auto& row : W3) for (auto& w : row) w = dist_W3(rng);
         }
         
-        // ==================== Momentum閫熷害鍒濆鍖?====================
-        // dW = 姊害; v_dW = momentum閫熷害鍚戦噺
+        // ==================== Momentum Buffers ====================
+        // dW is the current gradient, vW is the velocity term.
         std::vector<std::vector<double>> vW1(FCNN_HIDDEN1_SIZE, std::vector<double>(INPUT_SIZE, 0.0));
         std::vector<double> vb1(FCNN_HIDDEN1_SIZE, 0.0);
         std::vector<std::vector<double>> vW2(FCNN_HIDDEN2_SIZE, std::vector<double>(FCNN_HIDDEN1_SIZE, 0.0));
@@ -883,7 +882,7 @@ public:
             double totalLoss = 0.0;
             int correctPredictions = 0;
             
-            // 澶勭悊 mini-batch
+            // Process one mini-batch.
             for (size_t batchStart = 0; batchStart < images.size(); batchStart += FCNN_BATCH_SIZE) {
                 size_t batchEnd = std::min(batchStart + FCNN_BATCH_SIZE, images.size());
                 int batchSize = batchEnd - batchStart;
@@ -893,7 +892,7 @@ public:
                                static_cast<double>(completedUnits) / totalUnits,
                                estimateRemainingSeconds(started, completedUnits, totalUnits));
                 
-                // ==================== 鎵瑰鐞嗘搴︾疮绉?====================
+                // ==================== Gradient Accumulation ====================
                 std::vector<std::vector<double>> dW1(FCNN_HIDDEN1_SIZE, std::vector<double>(INPUT_SIZE, 0.0));
                 std::vector<double> db1(FCNN_HIDDEN1_SIZE, 0.0);
                 std::vector<std::vector<double>> dW2(FCNN_HIDDEN2_SIZE, std::vector<double>(FCNN_HIDDEN1_SIZE, 0.0));
@@ -905,8 +904,8 @@ public:
                     const auto& image = images[idx];
                     int label = labels[idx];
                     
-                    // ==================== 鍓嶅悜浼犳挱 ====================
-                    // Layer 1: ReLU闅愯棌灞?
+                    // ==================== Forward Pass ====================
+                    // Layer 1: dense + ReLU.
                     std::vector<double> z1(FCNN_HIDDEN1_SIZE, 0.0);
                     for (int h = 0; h < FCNN_HIDDEN1_SIZE; ++h) {
                         for (int i = 0; i < INPUT_SIZE; ++i) {
@@ -917,10 +916,10 @@ public:
                     
                     std::vector<double> hidden1(FCNN_HIDDEN1_SIZE);
                     for (int h = 0; h < FCNN_HIDDEN1_SIZE; ++h) {
-                        hidden1[h] = z1[h] > 0 ? z1[h] : 0;  // ReLU婵€娲?
+                        hidden1[h] = z1[h] > 0 ? z1[h] : 0;
                     }
                     
-                    // Layer 2: ReLU闅愯棌灞?
+                    // Layer 2: dense + ReLU.
                     std::vector<double> z2(FCNN_HIDDEN2_SIZE, 0.0);
                     for (int h = 0; h < FCNN_HIDDEN2_SIZE; ++h) {
                         for (int i = 0; i < FCNN_HIDDEN1_SIZE; ++i) {
@@ -931,10 +930,10 @@ public:
                     
                     std::vector<double> hidden2(FCNN_HIDDEN2_SIZE);
                     for (int h = 0; h < FCNN_HIDDEN2_SIZE; ++h) {
-                        hidden2[h] = z2[h] > 0 ? z2[h] : 0;  // ReLU婵€娲?
+                        hidden2[h] = z2[h] > 0 ? z2[h] : 0;
                     }
                     
-                    // Layer 3: 杈撳嚭灞傦紙绾挎€э級
+                    // Layer 3: output logits.
                     std::vector<double> z3(OUTPUT_SIZE, 0.0);
                     for (int o = 0; o < OUTPUT_SIZE; ++o) {
                         for (int i = 0; i < FCNN_HIDDEN2_SIZE; ++i) {
@@ -943,7 +942,7 @@ public:
                         z3[o] += b3[o];
                     }
                     
-                    // Softmax婵€娲?
+                    // Softmax normalization.
                     std::vector<double> output(OUTPUT_SIZE);
                     double maxZ3 = *std::max_element(z3.begin(), z3.end());
                     double sumExp = 0.0;
@@ -955,23 +954,23 @@ public:
                         output[o] /= sumExp;
                     }
                     
-                    // ==================== 鎹熷け璁＄畻锛堜氦鍙夌喌锛?===================
+                    // ==================== Loss ====================
                     double loss = -std::log(std::max(output[label], 1e-7));
                     totalLoss += loss;
                     
-                    // 妫€鏌ラ娴嬫纭€?
+                    // Track training accuracy.
                     int predictedClass = std::distance(output.begin(), 
                                                        std::max_element(output.begin(), output.end()));
                     if (predictedClass == label) correctPredictions++;
                     
-                    // ==================== 鍙嶅悜浼犳挱 ====================
-                    // 杈撳嚭灞傛搴?dL/dz3
+                    // ==================== Backpropagation ====================
+                    // Output-layer gradient: dL / dz3.
                     std::vector<double> dz3(OUTPUT_SIZE);
                     for (int o = 0; o < OUTPUT_SIZE; ++o) {
                         dz3[o] = output[o] - (o == label ? 1.0 : 0.0);  // Softmax - one_hot
                     }
                     
-                    // W3鍜宐3鐨勬搴?
+                    // Gradients for W3 and b3.
                     for (int o = 0; o < OUTPUT_SIZE; ++o) {
                         for (int h = 0; h < FCNN_HIDDEN2_SIZE; ++h) {
                             dW3[o][h] += dz3[o] * hidden2[h];
@@ -979,7 +978,7 @@ public:
                         db3[o] += dz3[o];
                     }
                     
-                    // 闅愯棌灞?姊害 dL/dz2
+                    // Hidden layer 2 gradient: dL / dz2.
                     std::vector<double> dhidden2(FCNN_HIDDEN2_SIZE, 0.0);
                     for (int h = 0; h < FCNN_HIDDEN2_SIZE; ++h) {
                         for (int o = 0; o < OUTPUT_SIZE; ++o) {
@@ -989,10 +988,10 @@ public:
                     
                     std::vector<double> dz2(FCNN_HIDDEN2_SIZE);
                     for (int h = 0; h < FCNN_HIDDEN2_SIZE; ++h) {
-                        dz2[h] = dhidden2[h] * (z2[h] > 0 ? 1.0 : 0.0);  // ReLU瀵兼暟
+                        dz2[h] = dhidden2[h] * (z2[h] > 0 ? 1.0 : 0.0);
                     }
                     
-                    // W2鍜宐2鐨勬搴?
+                    // Gradients for W2 and b2.
                     for (int h = 0; h < FCNN_HIDDEN2_SIZE; ++h) {
                         for (int i = 0; i < FCNN_HIDDEN1_SIZE; ++i) {
                             dW2[h][i] += dz2[h] * hidden1[i];
@@ -1000,7 +999,7 @@ public:
                         db2[h] += dz2[h];
                     }
                     
-                    // 闅愯棌灞?姊害 dL/dz1
+                    // Hidden layer 1 gradient: dL / dz1.
                     std::vector<double> dhidden1(FCNN_HIDDEN1_SIZE, 0.0);
                     for (int h = 0; h < FCNN_HIDDEN1_SIZE; ++h) {
                         for (int m = 0; m < FCNN_HIDDEN2_SIZE; ++m) {
@@ -1010,10 +1009,10 @@ public:
                     
                     std::vector<double> dz1(FCNN_HIDDEN1_SIZE);
                     for (int h = 0; h < FCNN_HIDDEN1_SIZE; ++h) {
-                        dz1[h] = dhidden1[h] * (z1[h] > 0 ? 1.0 : 0.0);  // ReLU瀵兼暟
+                        dz1[h] = dhidden1[h] * (z1[h] > 0 ? 1.0 : 0.0);
                     }
                     
-                    // W1鍜宐1鐨勬搴?
+                    // Gradients for W1 and b1.
                     for (int h = 0; h < FCNN_HIDDEN1_SIZE; ++h) {
                         for (int i = 0; i < INPUT_SIZE; ++i) {
                             dW1[h][i] += dz1[h] * image[i];
@@ -1022,7 +1021,7 @@ public:
                     }
                 }
                 
-                // ==================== Mini-batch姊害骞冲潎 ====================
+                // ==================== Average Gradients ====================
                 double learningRate = FCNN_LEARNING_RATE;
                 for (int h = 0; h < FCNN_HIDDEN1_SIZE; ++h) {
                     for (int i = 0; i < INPUT_SIZE; ++i) {
@@ -1043,10 +1042,8 @@ public:
                     db3[o] /= batchSize;
                 }
                 
-                // ==================== Momentum鏇存柊 ====================
-                // v_new = 尾 * v_old + (1-尾) * gradient 锛堟爣鍑哅omentum锛?
-                // 胃_new = 胃_old - 伪 * v_new
-                // 绠€鍖栧舰寮? v = 尾 * v + dW; 胃 = 胃 - 伪 * v
+                // ==================== Momentum Update ====================
+                // v = mu * v + grad; w = w - lr * v
                 
                 for (int h = 0; h < FCNN_HIDDEN1_SIZE; ++h) {
                     for (int i = 0; i < INPUT_SIZE; ++i) {
@@ -1089,12 +1086,12 @@ public:
     }
 
     int predict(const std::vector<double>& image) override {
-        // 妫€鏌ユ潈閲嶆槸鍚﹀凡鍒濆鍖?
+        // Return a default class if the model is not trained yet.
         if (W1.empty() || W2.empty() || W3.empty()) {
-            return 0;  // 鏈缁?
+            return 0;
         }
         
-        // 鍓嶅悜浼犳挱浣跨敤璁粌杩囩殑鏉冮噸
+        // Inference forward pass with trained weights.
         // Layer 1
         std::vector<double> hidden1(FCNN_HIDDEN1_SIZE, 0.0);
         for (int h = 0; h < FCNN_HIDDEN1_SIZE; ++h) {
@@ -1132,7 +1129,7 @@ public:
         std::vector<double> output(OUTPUT_SIZE, 0.0);
         
         if (W1.empty() || W2.empty() || W3.empty()) {
-            for (auto& o : output) o = 0.1;  // 鏈缁冿紝杩斿洖鍧囧寑鍒嗗竷
+            for (auto& o : output) o = 0.1;
             return output;
         }
         
@@ -1189,7 +1186,7 @@ public:
     std::vector<std::vector<int>> computeConfusionMatrix(
         const std::vector<std::vector<double>>& images,
         const std::vector<int>& labels) override {
-        // 姝ｇ‘瀹炵幇娣锋穯鐭╅樀璁＄畻
+        // Compute the confusion matrix from predictions.
         std::vector<std::vector<int>> matrix(OUTPUT_SIZE, std::vector<int>(OUTPUT_SIZE, 0));
         for (size_t i = 0; i < images.size(); ++i) {
             int predicted = predict(images[i]);
@@ -1202,7 +1199,7 @@ public:
                        std::vector<double>& precision,
                        std::vector<double>& recall,
                        std::vector<double>& f1) override {
-        // 鐪熷疄璁＄畻鍚勭被鐨勭簿鍑嗙巼銆佸彫鍥炵巼銆丗1鍒嗘暟
+        // Compute per-class precision, recall, and F1.
         precision.resize(OUTPUT_SIZE);
         recall.resize(OUTPUT_SIZE);
         f1.resize(OUTPUT_SIZE);
@@ -1270,7 +1267,7 @@ public:
     }
 };
 
-// ==================== CNN 妯″瀷瀹炵幇鍖呰鍣?====================
+// ==================== CNN Model ====================
 
 class CNNModel : public IClassificationModel {
 public:
@@ -1282,7 +1279,7 @@ public:
 private:
     static const int OUTPUT_SIZE = 10;
     
-    // 鏉冮噸鐭╅樀鍜屽亸缃紙鐢ㄤ簬persist锛?
+    // Persisted dense-layer parameters for the simplified CNN.
     std::vector<std::vector<double>> fcWeights;
     std::vector<double> fcBiases;
 
@@ -1309,13 +1306,13 @@ public:
         fcWeights.assign(OUTPUT_SIZE, std::vector<double>(64 * 4 * 4));
         fcBiases.assign(OUTPUT_SIZE, 0.0);
         
-        // 璇诲彇fcWeights
+        // Read fcWeights.
         for (int i = 0; i < OUTPUT_SIZE; ++i) {
             for (int j = 0; j < 64 * 4 * 4; ++j) {
                 file >> fcWeights[i][j];
             }
         }
-        // 璇诲彇fcBiases
+        // Read fcBiases.
         for (int i = 0; i < OUTPUT_SIZE; ++i) {
             file >> fcBiases[i];
         }
@@ -1354,7 +1351,7 @@ public:
         const auto started = std::chrono::steady_clock::now();
         const int totalUnits = std::max(1, epochs * static_cast<int>(images.size()));
         
-        // 妫€鏌ユ槸鍚﹀凡鍔犺浇鍙傛暟锛屽惁鍒欐墠杩涜He鍒濆鍖?
+        // If no parameters were loaded, initialize a fresh model.
         bool isNewTraining = fcWeights.empty() || fcWeights[0].empty();
         
         if (isNewTraining) {
@@ -1363,13 +1360,13 @@ public:
             std::cout << "  Initialization: load existing parameters" << std::endl;
         }
         
-        // 鍒濆鍖栨垨淇濈暀鏉冮噸
+        // Initialize or keep the existing weights.
         if (isNewTraining) {
             fcWeights.assign(OUTPUT_SIZE, std::vector<double>(64 * 4 * 4));
             fcBiases.assign(OUTPUT_SIZE, 0.0);
             
             std::mt19937 rng(std::chrono::system_clock::now().time_since_epoch().count());
-            // He鍒濆鍖? std = sqrt(2.0 / input_size)
+            // He initialization: std = sqrt(2 / fan_in).
             double std_w = std::sqrt(2.0 / (64 * 4 * 4));
             std::normal_distribution<double> dist(0.0, std_w);
             
@@ -1382,11 +1379,11 @@ public:
             double totalLoss = 0.0;
             int correctPredictions = 0;
             
-            // 澶勭悊 mini-batch
+            // Process one mini-batch.
             for (size_t batchStart = 0; batchStart < images.size(); batchStart += CNN_BATCH_SIZE) {
                 size_t batchEnd = std::min(batchStart + CNN_BATCH_SIZE, images.size());
                 
-                // 鏄剧ず杩涘害鏉?
+                // Report training progress.
                 ProgressBar::show(batchEnd, images.size(), "Processing data");
                 const int completedUnits = epoch * static_cast<int>(images.size()) + static_cast<int>(batchEnd);
                 reportProgress(completedUnits, totalUnits,
@@ -1397,13 +1394,13 @@ public:
                     const auto& image = images[idx];
                     int label = labels[idx];
                     
-                    // 绠€鍖栫殑CNN鍓嶅悜浼犳挱 - 鐩存帴鎻愬彇鐗瑰緛
+                    // Simplified CNN forward pass with handcrafted feature extraction.
                     std::vector<double> features(64 * 4 * 4);
                     for (size_t i = 0; i < features.size(); ++i) {
-                        features[i] = image[i % image.size()] * 0.5;  // 绠€鍗曠壒寰佹彁鍙?
+                        features[i] = image[i % image.size()] * 0.5;
                     }
                     
-                    // 鍏ㄨ繛鎺ュ眰杈撳嚭
+                    // Dense output layer.
                     std::vector<double> output(OUTPUT_SIZE, 0.0);
                     for (int o = 0; o < OUTPUT_SIZE; ++o) {
                         for (size_t i = 0; i < features.size(); ++i) {
@@ -1421,16 +1418,16 @@ public:
                     }
                     for (auto& o : output) o /= sumExp;
                     
-                    // 璁＄畻鎹熷け
+                    // Cross-entropy loss.
                     double loss = -std::log(std::max(output[label], 1e-7));
                     totalLoss += loss;
                     
-                    // 棰勬祴
+                    // Predicted class.
                     int predictedClass = std::distance(output.begin(), 
                                                        std::max_element(output.begin(), output.end()));
                     if (predictedClass == label) correctPredictions++;
                     
-                    // 姊害涓嬮檷鏇存柊
+                    // Gradient descent update.
                     double learningRate = CNN_LEARNING_RATE;
                     for (int o = 0; o < OUTPUT_SIZE; ++o) {
                         double gradient = output[o] - (o == label ? 1.0 : 0.0);
@@ -1455,18 +1452,18 @@ public:
     }
 
     int predict(const std::vector<double>& image) override {
-        // 妫€鏌ユ潈閲嶆槸鍚﹀凡鍒濆鍖?
+        // Return a default class if the model is not trained yet.
         if (fcWeights.empty() || fcWeights[0].empty()) {
-            return 0;  // 鏈缁?
+            return 0;
         }
         
-        // 绠€鍖栫殑CNN鐗瑰緛鎻愬彇
+        // Simplified feature extraction.
         std::vector<double> features(64 * 4 * 4);
         for (size_t i = 0; i < features.size(); ++i) {
-            features[i] = image[i % image.size()] * 0.5;  // 涓巘rain()涓繚鎸佷竴鑷?
+            features[i] = image[i % image.size()] * 0.5;  // Keep this consistent with train().
         }
         
-        // 浣跨敤璁粌杩囩殑鏉冮噸杩涜棰勬祴
+        // Run inference with trained weights.
         std::vector<double> output(OUTPUT_SIZE, 0.0);
         for (int o = 0; o < OUTPUT_SIZE; ++o) {
             for (size_t i = 0; i < features.size(); ++i) {
@@ -1483,17 +1480,17 @@ public:
         std::vector<double> output(OUTPUT_SIZE, 0.0);
         
         if (fcWeights.empty() || fcWeights[0].empty()) {
-            for (auto& o : output) o = 0.1;  // 鏈缁?
+            for (auto& o : output) o = 0.1;
             return output;
         }
         
-        // 鐗瑰緛鎻愬彇
+        // Feature extraction.
         std::vector<double> features(64 * 4 * 4);
         for (size_t i = 0; i < features.size(); ++i) {
-            features[i] = image[i % image.size()] * 0.5;  // 涓巘rain()涓繚鎸佷竴鑷?
+            features[i] = image[i % image.size()] * 0.5;  // Keep this consistent with train().
         }
         
-        // 浣跨敤璁粌杩囩殑鏉冮噸
+        // Use trained weights for inference.
         for (int o = 0; o < OUTPUT_SIZE; ++o) {
             for (size_t i = 0; i < features.size(); ++i) {
                 output[o] += fcWeights[o][i] * features[i];
@@ -1525,7 +1522,7 @@ public:
     std::vector<std::vector<int>> computeConfusionMatrix(
         const std::vector<std::vector<double>>& images,
         const std::vector<int>& labels) override {
-        // 姝ｇ‘瀹炵幇娣锋穯鐭╅樀璁＄畻
+        // Compute the confusion matrix from predictions.
         std::vector<std::vector<int>> matrix(OUTPUT_SIZE, std::vector<int>(OUTPUT_SIZE, 0));
         for (size_t i = 0; i < images.size(); ++i) {
             int predicted = predict(images[i]);
@@ -1538,7 +1535,7 @@ public:
                        std::vector<double>& precision,
                        std::vector<double>& recall,
                        std::vector<double>& f1) override {
-        // 鐪熷疄璁＄畻鍚勭被鐨勭簿鍑嗙巼銆佸彫鍥炵巼銆丗1鍒嗘暟
+        // Compute per-class precision, recall, and F1.
         precision.resize(OUTPUT_SIZE);
         recall.resize(OUTPUT_SIZE);
         f1.resize(OUTPUT_SIZE);
@@ -1606,7 +1603,7 @@ public:
     }
 };
 
-// ==================== 闅忔満妫灄妯″瀷瀹炵幇 ====================
+// ==================== Random Forest Model ====================
 
 class RandomForestModel : public IClassificationModel {
 public:
@@ -2156,7 +2153,7 @@ public:
     }
 };
 
-// ==================== K杩戦偦妯″瀷瀹炵幇 ====================
+// ==================== KNN Model ====================
 
 class KNNModel : public IClassificationModel {
 public:
@@ -2516,7 +2513,7 @@ public:
     }
 };
 
-// ==================== 閫昏緫鍥炲綊妯″瀷瀹炵幇 ====================
+// ==================== Logistic Regression Model ====================
 
 class LogisticRegressionModel : public IClassificationModel {
 public:
@@ -2527,7 +2524,7 @@ private:
     static const int NUM_CLASSES = 10;
     static const int INPUT_SIZE = 784;
     
-    // Softmax鍥炲綊鐨勬潈閲嶇煩闃靛拰鍋忕疆鍚戦噺
+    // Softmax regression parameters.
     std::vector<std::vector<double>> weights;  // NUM_CLASSES x INPUT_SIZE
     std::vector<double> biases;                // NUM_CLASSES
 
@@ -2544,7 +2541,7 @@ public:
         weights.assign(NUM_CLASSES, std::vector<double>(INPUT_SIZE, 0.0));
         biases.assign(NUM_CLASSES, 0.0);
         
-        // Xavier鍒濆鍖栵細std = sqrt(2.0 / (input_size + output_size))
+        // Xavier initialization: std = sqrt(2 / (fan_in + fan_out)).
         std::mt19937 rng(std::chrono::system_clock::now().time_since_epoch().count());
         double std_w = std::sqrt(2.0 / (INPUT_SIZE + NUM_CLASSES));
         std::normal_distribution<double> dist(0.0, std_w);
@@ -2617,7 +2614,7 @@ public:
             double totalLoss = 0.0;
             int correctPredictions = 0;
             
-            // 澶勭悊 mini-batch
+            // Process one mini-batch.
             for (size_t batchStart = 0; batchStart < images.size(); batchStart += LR_BATCH_SIZE) {
                 size_t batchEnd = std::min(batchStart + LR_BATCH_SIZE, images.size());
                 int batchSize = batchEnd - batchStart;
@@ -2628,7 +2625,7 @@ public:
                                static_cast<double>(completedUnits) / totalUnits,
                                estimateRemainingSeconds(started, completedUnits, totalUnits));
                 
-                // 绱Н姊害
+                // Accumulate gradients.
                 std::vector<std::vector<double>> dWeights(NUM_CLASSES, 
                     std::vector<double>(INPUT_SIZE, 0.0));
                 std::vector<double> dBiases(NUM_CLASSES, 0.0);
@@ -2638,7 +2635,7 @@ public:
                     int label = labels[idx];
                     
                     // ==================== 鍓嶅悜浼犳挱 ====================
-                    // 璁＄畻logits: z = W*x + b
+                    // Compute logits: z = W * x + b.
                     std::vector<double> logits(NUM_CLASSES, 0.0);
                     for (int c = 0; c < NUM_CLASSES; ++c) {
                         logits[c] = biases[c];
@@ -2647,7 +2644,7 @@ public:
                         }
                     }
                     
-                    // Softmax婵€娲?
+                    // Softmax normalization.
                     std::vector<double> probs(NUM_CLASSES);
                     double maxLogit = *std::max_element(logits.begin(), logits.end());
                     double sumExp = 0.0;
@@ -2659,32 +2656,32 @@ public:
                         probs[c] /= sumExp;
                     }
                     
-                    // ==================== 鎹熷け璁＄畻锛堜氦鍙夌喌锛?===================
+                    // ==================== Loss ====================
                     double loss = -std::log(std::max(probs[label], 1e-7));
                     totalLoss += loss;
                     
-                    // 妫€鏌ラ娴嬫纭€?
+                    // Track training accuracy.
                     int predictedClass = std::distance(probs.begin(), 
                                                        std::max_element(probs.begin(), probs.end()));
                     if (predictedClass == label) correctPredictions++;
                     
-                    // ==================== 鍙嶅悜浼犳挱 ====================
-                    // 瀵逛簬Softmax + CrossEntropy锛屾搴?= probs - one_hot(label)
+                    // ==================== Backpropagation ====================
+                    // For softmax + cross-entropy: grad = probs - one_hot(label).
                     for (int c = 0; c < NUM_CLASSES; ++c) {
                         double gradient = probs[c] - (c == label ? 1.0 : 0.0);
                         
-                        // 绱Н鏉冮噸姊害锛堝寘鎷琇2姝ｅ垯鍖栭」锛?
+                        // Accumulate weight gradients with L2 regularization.
                         for (int i = 0; i < INPUT_SIZE; ++i) {
                             dWeights[c][i] += gradient * image[i] + 
                                             LR_REGULARIZATION_L2 * weights[c][i];
                         }
                         
-                        // 绱Н鍋忕疆姊害
+                        // Accumulate bias gradients.
                         dBiases[c] += gradient;
                     }
                 }
                 
-                // ==================== Mini-batch 姊害骞冲潎鍜屾潈閲嶆洿鏂?====================
+                // ==================== Average Gradients and Update ====================
                 double learningRate = LR_LEARNING_RATE;
                 for (int c = 0; c < NUM_CLASSES; ++c) {
                     for (int i = 0; i < INPUT_SIZE; ++i) {
@@ -2836,12 +2833,12 @@ public:
     }
 };
 
-// ==================== 鑿滃崟绯荤粺 ====================
+// ==================== Menu System ====================
 
 class MenuSystem {
 public:
     /**
-     * 鏄剧ず涓昏彍鍗?
+     * Show the main menu.
      */
     static void showMainMenu() {
         std::cout << "\n" << std::string(50, '=') << std::endl;
@@ -2858,7 +2855,7 @@ public:
     }
 
     /**
-     * 鏄剧ず妯″瀷閫夋嫨鑿滃崟
+     * Show the model selection menu.
      */
     static int showModelSelectionMenu() {
         std::cout << "\n" << std::string(50, '-') << std::endl;
@@ -2877,7 +2874,7 @@ public:
     }
 
     /**
-     * 鏄剧ず璁粌鍙傛暟鑿滃崟
+     * Show the training options menu.
      */
     static int showTrainingMenu() {
         std::cout << "\n" << std::string(50, '-') << std::endl;
@@ -2893,7 +2890,7 @@ public:
     }
 
     /**
-     * 鏄剧ず娴嬭瘯缁撴灉鑿滃崟
+     * Show the test result menu.
      */
     static void showTestResultMenu(const std::string& rocDataFile) {
         std::cout << "\n" << std::string(50, '-') << std::endl;
@@ -2906,7 +2903,7 @@ public:
     }
 
     /**
-     * 鏄剧ず缁樺浘閫夐」鑿滃崟
+     * Show the ROC data menu.
      */
     static std::string showPlotMenu() {
         std::cout << "\n" << std::string(50, '-') << std::endl;
@@ -2955,9 +2952,9 @@ public:
     }
 };
 
-// ==================== 妯″瀷宸ュ巶瀹炵幇 ====================
+// ==================== Model Factory ====================
 
-// 鐜板湪鎵€鏈夋ā鍨嬬被閮藉凡瀹氫箟锛屽彲浠ュ畨鍏ㄥ湴瀹炵幇宸ュ巶鍑芥暟
+// All model classes are defined above, so the factory can be implemented here.
 std::shared_ptr<IClassificationModel> ModelFactory::createModel(ModelType type) {
     switch (type) {
         case SVM:
