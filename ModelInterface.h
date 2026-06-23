@@ -18,11 +18,29 @@
  */
 
 
-struct Metrics { double accuracy; double precision; double recall; double f1; double auc; std::vector<std::vector<int>> confusionMatrix; };
+using ProgressCallback = std::function<void(int currentEpoch,
+                                            int totalEpochs,
+                                            double progress,
+                                            double etaSeconds)>;
+
+struct Metrics {
+    double accuracy = 0.0;
+    double precision = 0.0;
+    double recall = 0.0;
+    double f1 = 0.0;
+    double auc = 0.0;
+    double microPrecision = 0.0;
+    double microRecall = 0.0;
+    double microF1 = 0.0;
+    std::vector<double> perClassPrecision;
+    std::vector<double> perClassRecall;
+    std::vector<double> perClassF1;
+    std::vector<std::vector<int>> confusionMatrix;
+};
 class IClassificationModel {
 public:
-    std::function<void(int,int,double,double)> progressCallback;
-    virtual void setProgressCallback(std::function<void(int,int,double,double)> cb) { progressCallback = cb; }
+    ProgressCallback progressCallback;
+    virtual void setProgressCallback(ProgressCallback cb) { progressCallback = cb; }
     virtual std::string getStructureDescription() const = 0;
     virtual Metrics testAndGetMetrics(const std::vector<std::vector<double>>& images, const std::vector<int>& labels) = 0;
 

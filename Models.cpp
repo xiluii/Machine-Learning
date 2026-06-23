@@ -14,6 +14,7 @@
 #include <utility>
 #include <functional>
 #include <filesystem>
+#include <stdexcept>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -66,6 +67,14 @@ const int KNN_MAX_PROTOTYPES = 3000;
 
 // ==================== Dataset Loading ====================
 
+namespace {
+constexpr int kNumClasses = 10;
+}
+
+Metrics buildMetricsSnapshot(IClassificationModel& model,
+                             const std::vector<std::vector<double>>& images,
+                             const std::vector<int>& labels);
+
 // Read a 32-bit big-endian integer from an MNIST file.
 int readBigEndianInt(std::ifstream& file) {
     uint32_t val;
@@ -77,8 +86,7 @@ int readBigEndianInt(std::ifstream& file) {
 std::vector<std::vector<double>> readImages(const std::string& filename, int& numImages) {
     std::ifstream file(filename, std::ios::binary);
     if (!file.is_open()) {
-        std::cerr << "Failed to open file: " << filename << std::endl;
-        exit(1);
+        throw std::runtime_error("Failed to open image file: " + filename);
     }
     int magic = readBigEndianInt(file);
     numImages = readBigEndianInt(file);
@@ -101,8 +109,7 @@ std::vector<std::vector<double>> readImages(const std::string& filename, int& nu
 std::vector<int> readLabels(const std::string& filename, int& numLabels) {
     std::ifstream file(filename, std::ios::binary);
     if (!file.is_open()) {
-        std::cerr << "Failed to open file: " << filename << std::endl;
-        exit(1);
+        throw std::runtime_error("Failed to open label file: " + filename);
     }
     int magic = readBigEndianInt(file);
     numLabels = readBigEndianInt(file);
@@ -121,16 +128,20 @@ double writeRocDataAndComputeAUC(const std::vector<double>& scores,
                                  const std::vector<int>& binaryLabels,
                                  const std::string& rocFilename) {
     namespace fs = std::filesystem;
-    fs::path outputPath = fs::path(rocFilename);
-    if (!outputPath.has_parent_path() || !fs::exists(outputPath.parent_path())) {
-        fs::path parentCandidate = fs::path("..") / outputPath.parent_path();
-        if (outputPath.has_parent_path() && fs::exists(parentCandidate)) {
-            outputPath = fs::path("..") / outputPath;
+    fs::path outputPath;
+    const bool shouldWriteFile = !rocFilename.empty();
+    if (shouldWriteFile) {
+        outputPath = fs::path(rocFilename);
+        if (!outputPath.has_parent_path() || !fs::exists(outputPath.parent_path())) {
+            fs::path parentCandidate = fs::path("..") / outputPath.parent_path();
+            if (outputPath.has_parent_path() && fs::exists(parentCandidate)) {
+                outputPath = fs::path("..") / outputPath;
+            }
         }
-    }
-    if (outputPath.has_parent_path()) {
-        std::error_code ec;
-        fs::create_directories(outputPath.parent_path(), ec);
+        if (outputPath.has_parent_path()) {
+            std::error_code ec;
+            fs::create_directories(outputPath.parent_path(), ec);
+        }
     }
 
     std::vector<std::pair<double, int>> rankedSamples;
@@ -161,14 +172,16 @@ double writeRocDataAndComputeAUC(const std::vector<double>& scores,
         return 0.0;
     }
 
-    std::ofstream file(outputPath);
-    if (file) {
-        for (size_t i = 0; i < scores.size(); ++i) {
-            file << scores[i] << " " << binaryLabels[i] << "\n";
+    if (shouldWriteFile) {
+        std::ofstream file(outputPath);
+        if (file) {
+            for (size_t i = 0; i < scores.size(); ++i) {
+                file << scores[i] << " " << binaryLabels[i] << "\n";
+            }
+            file.close();
+        } else {
+            std::cerr << "Failed to write ROC data file: " << outputPath.string() << std::endl;
         }
-        file.close();
-    } else {
-        std::cerr << "Failed to write ROC data file: " << outputPath.string() << std::endl;
     }
 
     double truePositive = 0.0;
@@ -206,6 +219,181 @@ double writeRocDataAndComputeAUC(const std::vector<double>& scores,
     }
 
     return auc;
+}
+
+double computeAccuracyFromPredictions(IClassificationModel& model,
+                                      const std::vector<std::vector<double>>& images,
+                                      const std::vector<int>& labels) {
+    if (images.empty() || labels.empty() || images.size() != labels.size()) {
+        return 0.0;
+    }
+
+    int correct = 0;
+    for (size_t i = 0; i < images.size(); ++i) {
+        if (model.predict(images[i]) == labels[i]) {
+            ++correct;
+        }
+    }
+    return static_cast<double>(correct) / static_cast<double>(images.size());
+}
+
+std::vector<std::vector<int>> computeConfusionMatrixFromPredictions(
+    IClassificationModel& model,
+    const std::vector<std::vector<double>>& images,
+    const std::vector<int>& labels) {
+    std::vector<std::vector<int>> matrix(kNumClasses, std::vector<int>(kNumClasses, 0));
+    const size_t sampleCount = std::min(images.size(), labels.size());
+    for (size_t i = 0; i < sampleCount; ++i) {
+        const int truth = labels[i];
+        const int predicted = model.predict(images[i]);
+        if (truth >= 0 && truth < kNumClasses && predicted >= 0 && predicted < kNumClasses) {
+            matrix[truth][predicted]++;
+        }
+    }
+    return matrix;
+}
+
+void computePerClassMetricsFromConfusionMatrix(const std::vector<std::vector<int>>& matrix,
+                                               std::vector<double>& precision,
+                                               std::vector<double>& recall,
+                                               std::vector<double>& f1) {
+    const size_t classCount = matrix.size();
+    precision.assign(classCount, 0.0);
+    recall.assign(classCount, 0.0);
+    f1.assign(classCount, 0.0);
+
+    for (size_t c = 0; c < classCount; ++c) {
+        const int tp = matrix[c][c];
+        int fp = 0;
+        int fn = 0;
+        for (size_t i = 0; i < classCount; ++i) {
+            if (i == c) {
+                continue;
+            }
+            fp += matrix[i][c];
+            fn += matrix[c][i];
+        }
+
+        precision[c] = (tp + fp > 0) ? static_cast<double>(tp) / static_cast<double>(tp + fp) : 0.0;
+        recall[c] = (tp + fn > 0) ? static_cast<double>(tp) / static_cast<double>(tp + fn) : 0.0;
+        f1[c] = (precision[c] + recall[c] > 0.0)
+                    ? 2.0 * precision[c] * recall[c] / (precision[c] + recall[c])
+                    : 0.0;
+    }
+}
+
+void populateMetricSummary(Metrics& metrics) {
+    metrics.precision = 0.0;
+    metrics.recall = 0.0;
+    metrics.f1 = 0.0;
+    metrics.microPrecision = 0.0;
+    metrics.microRecall = 0.0;
+    metrics.microF1 = 0.0;
+
+    const size_t classCount = metrics.perClassPrecision.size();
+    if (classCount > 0) {
+        for (size_t i = 0; i < classCount; ++i) {
+            metrics.precision += metrics.perClassPrecision[i];
+            metrics.recall += metrics.perClassRecall[i];
+            metrics.f1 += metrics.perClassF1[i];
+        }
+        const double count = static_cast<double>(classCount);
+        metrics.precision /= count;
+        metrics.recall /= count;
+        metrics.f1 /= count;
+    }
+
+    int totalTp = 0;
+    int totalFp = 0;
+    int totalFn = 0;
+    for (size_t c = 0; c < metrics.confusionMatrix.size(); ++c) {
+        totalTp += metrics.confusionMatrix[c][c];
+        for (size_t i = 0; i < metrics.confusionMatrix.size(); ++i) {
+            if (i == c) {
+                continue;
+            }
+            totalFp += metrics.confusionMatrix[i][c];
+            totalFn += metrics.confusionMatrix[c][i];
+        }
+    }
+
+    metrics.microPrecision = (totalTp + totalFp > 0)
+                                 ? static_cast<double>(totalTp) / static_cast<double>(totalTp + totalFp)
+                                 : 0.0;
+    metrics.microRecall = (totalTp + totalFn > 0)
+                              ? static_cast<double>(totalTp) / static_cast<double>(totalTp + totalFn)
+                              : 0.0;
+    metrics.microF1 = (metrics.microPrecision + metrics.microRecall > 0.0)
+                          ? 2.0 * metrics.microPrecision * metrics.microRecall /
+                                (metrics.microPrecision + metrics.microRecall)
+                          : 0.0;
+}
+
+double computeMacroAUCFromProbabilities(IClassificationModel& model,
+                                        const std::vector<std::vector<double>>& images,
+                                        const std::vector<int>& labels,
+                                        std::string& rocFilename) {
+    rocFilename = model.getROCDataFilename();
+
+    double aucSum = 0.0;
+    int aucCount = 0;
+    std::vector<double> classZeroScores;
+    std::vector<int> classZeroLabels;
+    classZeroScores.reserve(images.size());
+    classZeroLabels.reserve(images.size());
+
+    for (int targetClass = 0; targetClass < kNumClasses; ++targetClass) {
+        std::vector<double> scores;
+        std::vector<int> binaryLabels;
+        scores.reserve(images.size());
+        binaryLabels.reserve(images.size());
+
+        for (size_t i = 0; i < images.size(); ++i) {
+            const auto probabilities = model.predictProba(images[i]);
+            const double score = targetClass < static_cast<int>(probabilities.size())
+                                     ? probabilities[targetClass]
+                                     : 0.0;
+            scores.push_back(score);
+            binaryLabels.push_back(labels[i] == targetClass ? 1 : 0);
+
+            if (targetClass == 0) {
+                classZeroScores.push_back(score);
+                classZeroLabels.push_back(labels[i] == 0 ? 1 : 0);
+            }
+        }
+
+        double positives = 0.0;
+        double negatives = 0.0;
+        for (int binaryLabel : binaryLabels) {
+            if (binaryLabel == 1) {
+                positives += 1.0;
+            } else {
+                negatives += 1.0;
+            }
+        }
+
+        if (positives > 0.0 && negatives > 0.0) {
+            aucSum += writeRocDataAndComputeAUC(scores, binaryLabels, "");
+            ++aucCount;
+        }
+    }
+
+    writeRocDataAndComputeAUC(classZeroScores, classZeroLabels, rocFilename);
+    return aucCount > 0 ? aucSum / static_cast<double>(aucCount) : 0.0;
+}
+
+void printEvaluationReport(const std::string& title,
+                           IClassificationModel& model,
+                           const std::vector<std::vector<double>>& images,
+                           const std::vector<int>& labels) {
+    Metrics metrics = buildMetricsSnapshot(model, images, labels);
+    std::cout << "\n======== " << title << " Test Results ========" << std::endl;
+    std::cout << "Accuracy:  " << std::fixed << std::setprecision(4) << metrics.accuracy * 100 << "%" << std::endl;
+    std::cout << "Precision: " << std::setprecision(4) << metrics.precision * 100 << "%" << std::endl;
+    std::cout << "Recall:    " << std::setprecision(4) << metrics.recall * 100 << "%" << std::endl;
+    std::cout << "F1 Score:  " << std::setprecision(4) << metrics.f1 * 100 << "%" << std::endl;
+    std::cout << "AUC:       " << std::setprecision(4) << metrics.auc << std::endl;
+    std::cout << "========================================" << std::endl;
 }
 
 bool writeCnnDashboardData(IClassificationModel& model,
@@ -320,23 +508,11 @@ Metrics buildMetricsSnapshot(IClassificationModel& model,
     Metrics metrics{};
     metrics.accuracy = model.evaluate(images, labels);
     metrics.confusionMatrix = model.computeConfusionMatrix(images, labels);
-
-    std::vector<double> precision;
-    std::vector<double> recall;
-    std::vector<double> f1;
-    model.computeMetrics(metrics.confusionMatrix, precision, recall, f1);
-
-    if (!precision.empty()) {
-        for (size_t i = 0; i < precision.size(); ++i) {
-            metrics.precision += precision[i];
-            metrics.recall += recall[i];
-            metrics.f1 += f1[i];
-        }
-        const double count = static_cast<double>(precision.size());
-        metrics.precision /= count;
-        metrics.recall /= count;
-        metrics.f1 /= count;
-    }
+    model.computeMetrics(metrics.confusionMatrix,
+                         metrics.perClassPrecision,
+                         metrics.perClassRecall,
+                         metrics.perClassF1);
+    populateMetricSummary(metrics);
 
     std::string rocFilename;
     metrics.auc = model.computeAUC(images, labels, rocFilename);
@@ -609,63 +785,26 @@ public:
 
     double evaluate(const std::vector<std::vector<double>>& images,
                    const std::vector<int>& labels) override {
-        int correct = 0;
-        for (size_t i = 0; i < images.size(); ++i) {
-            if (predict(images[i]) == labels[i]) correct++;
-        }
-        return static_cast<double>(correct) / images.size();
+        return computeAccuracyFromPredictions(*this, images, labels);
     }
 
     std::vector<std::vector<int>> computeConfusionMatrix(
         const std::vector<std::vector<double>>& images,
         const std::vector<int>& labels) override {
-        std::vector<std::vector<int>> matrix(NUM_CLASSES, std::vector<int>(NUM_CLASSES, 0));
-        for (size_t i = 0; i < images.size(); ++i) {
-            int predicted = predict(images[i]);
-            matrix[labels[i]][predicted]++;
-        }
-        return matrix;
+        return computeConfusionMatrixFromPredictions(*this, images, labels);
     }
 
     void computeMetrics(const std::vector<std::vector<int>>& matrix,
                        std::vector<double>& precision,
                        std::vector<double>& recall,
                        std::vector<double>& f1) override {
-        precision.resize(NUM_CLASSES);
-        recall.resize(NUM_CLASSES);
-        f1.resize(NUM_CLASSES);
-        for (int c = 0; c < NUM_CLASSES; ++c) {
-            int tp = matrix[c][c];
-            int fp = 0, fn = 0;
-            for (int i = 0; i < NUM_CLASSES; ++i) {
-                if (i != c) {
-                    fp += matrix[i][c];
-                    fn += matrix[c][i];
-                }
-            }
-            precision[c] = (tp + fp > 0) ? static_cast<double>(tp) / (tp + fp) : 0.0;
-            recall[c] = (tp + fn > 0) ? static_cast<double>(tp) / (tp + fn) : 0.0;
-            f1[c] = (precision[c] + recall[c] > 0) ?
-                    2 * precision[c] * recall[c] / (precision[c] + recall[c]) : 0.0;
-        }
+        computePerClassMetricsFromConfusionMatrix(matrix, precision, recall, f1);
     }
 
     double computeAUC(const std::vector<std::vector<double>>& images,
                      const std::vector<int>& labels,
                      std::string& rocFilename) override {
-        rocFilename = getROCDataFilename();
-        std::vector<double> scores;
-        std::vector<int> binaryLabels;
-        scores.reserve(images.size());
-        binaryLabels.reserve(images.size());
-
-        for (size_t i = 0; i < images.size(); ++i) {
-            auto probabilities = predictProba(images[i]);
-            scores.push_back(probabilities[0]);
-            binaryLabels.push_back(labels[i] == 0 ? 1 : 0);
-        }
-
-        return writeRocDataAndComputeAUC(scores, binaryLabels, rocFilename);
+        return computeMacroAUCFromProbabilities(*this, images, labels, rocFilename);
     }
 
     std::string getROCDataFilename() const override {
@@ -674,27 +813,7 @@ public:
 
     void evaluateAndReport(const std::vector<std::vector<double>>& images,
                           const std::vector<int>& labels) override {
-        double acc = evaluate(images, labels);
-        auto matrix = computeConfusionMatrix(images, labels);
-        std::vector<double> precision, recall, f1;
-        computeMetrics(matrix, precision, recall, f1);
-
-        double avgPrecision = 0.0, avgRecall = 0.0, avgF1 = 0.0;
-        for (int c = 0; c < NUM_CLASSES; ++c) {
-            avgPrecision += precision[c];
-            avgRecall += recall[c];
-            avgF1 += f1[c];
-        }
-        avgPrecision /= NUM_CLASSES;
-        avgRecall /= NUM_CLASSES;
-        avgF1 /= NUM_CLASSES;
-
-        std::cout << "\n========== SVM Test Results ==========" << std::endl;
-        std::cout << "Accuracy:  " << std::fixed << std::setprecision(4) << acc * 100 << "%" << std::endl;
-        std::cout << "Precision: " << std::setprecision(4) << avgPrecision * 100 << "%" << std::endl;
-        std::cout << "Recall:    " << std::setprecision(4) << avgRecall * 100 << "%" << std::endl;
-        std::cout << "F1 Score:  " << std::setprecision(4) << avgF1 * 100 << "%" << std::endl;
-        std::cout << "========================================" << std::endl;
+        printEvaluationReport("SVM", *this, images, labels);
     }
 };
 
@@ -1176,65 +1295,26 @@ public:
 
     double evaluate(const std::vector<std::vector<double>>& images,
                    const std::vector<int>& labels) override {
-        int correct = 0;
-        for (size_t i = 0; i < images.size(); ++i) {
-            if (predict(images[i]) == labels[i]) correct++;
-        }
-        return static_cast<double>(correct) / images.size();
+        return computeAccuracyFromPredictions(*this, images, labels);
     }
 
     std::vector<std::vector<int>> computeConfusionMatrix(
         const std::vector<std::vector<double>>& images,
         const std::vector<int>& labels) override {
-        // Compute the confusion matrix from predictions.
-        std::vector<std::vector<int>> matrix(OUTPUT_SIZE, std::vector<int>(OUTPUT_SIZE, 0));
-        for (size_t i = 0; i < images.size(); ++i) {
-            int predicted = predict(images[i]);
-            matrix[labels[i]][predicted]++;
-        }
-        return matrix;
+        return computeConfusionMatrixFromPredictions(*this, images, labels);
     }
 
     void computeMetrics(const std::vector<std::vector<int>>& matrix,
                        std::vector<double>& precision,
                        std::vector<double>& recall,
                        std::vector<double>& f1) override {
-        // Compute per-class precision, recall, and F1.
-        precision.resize(OUTPUT_SIZE);
-        recall.resize(OUTPUT_SIZE);
-        f1.resize(OUTPUT_SIZE);
-        for (int c = 0; c < OUTPUT_SIZE; ++c) {
-            int tp = matrix[c][c];
-            int fp = 0, fn = 0;
-            for (int i = 0; i < OUTPUT_SIZE; ++i) {
-                if (i != c) {
-                    fp += matrix[i][c];
-                    fn += matrix[c][i];
-                }
-            }
-            precision[c] = (tp + fp > 0) ? static_cast<double>(tp) / (tp + fp) : 0.0;
-            recall[c] = (tp + fn > 0) ? static_cast<double>(tp) / (tp + fn) : 0.0;
-            f1[c] = (precision[c] + recall[c] > 0) ?
-                    2 * precision[c] * recall[c] / (precision[c] + recall[c]) : 0.0;
-        }
+        computePerClassMetricsFromConfusionMatrix(matrix, precision, recall, f1);
     }
 
     double computeAUC(const std::vector<std::vector<double>>& images,
                      const std::vector<int>& labels,
                      std::string& rocFilename) override {
-        rocFilename = getROCDataFilename();
-        std::vector<double> scores;
-        std::vector<int> binaryLabels;
-        scores.reserve(images.size());
-        binaryLabels.reserve(images.size());
-
-        for (size_t i = 0; i < images.size(); ++i) {
-            auto prob = predictProba(images[i]);
-            scores.push_back(prob[0]);
-            binaryLabels.push_back(labels[i] == 0 ? 1 : 0);
-        }
-
-        return writeRocDataAndComputeAUC(scores, binaryLabels, rocFilename);
+        return computeMacroAUCFromProbabilities(*this, images, labels, rocFilename);
     }
 
     std::string getROCDataFilename() const override {
@@ -1243,27 +1323,7 @@ public:
 
     void evaluateAndReport(const std::vector<std::vector<double>>& images,
                           const std::vector<int>& labels) override {
-        double acc = evaluate(images, labels);
-        auto matrix = computeConfusionMatrix(images, labels);
-        std::vector<double> precision, recall, f1;
-        computeMetrics(matrix, precision, recall, f1);
-        
-        double avgPrecision = 0.0, avgRecall = 0.0, avgF1 = 0.0;
-        for (int c = 0; c < OUTPUT_SIZE; ++c) {
-            avgPrecision += precision[c];
-            avgRecall += recall[c];
-            avgF1 += f1[c];
-        }
-        avgPrecision /= OUTPUT_SIZE;
-        avgRecall /= OUTPUT_SIZE;
-        avgF1 /= OUTPUT_SIZE;
-        
-        std::cout << "\n========== FCNN Test Results ==========" << std::endl;
-        std::cout << "Accuracy:  " << std::fixed << std::setprecision(4) << acc * 100 << "%" << std::endl;
-        std::cout << "Precision: " << std::setprecision(4) << avgPrecision * 100 << "%" << std::endl;
-        std::cout << "Recall:    " << std::setprecision(4) << avgRecall * 100 << "%" << std::endl;
-        std::cout << "F1 Score:  " << std::setprecision(4) << avgF1 * 100 << "%" << std::endl;
-        std::cout << "==========================================" << std::endl;
+        printEvaluationReport("FCNN", *this, images, labels);
     }
 };
 
@@ -1271,17 +1331,297 @@ public:
 
 class CNNModel : public IClassificationModel {
 public:
-    virtual std::string getStructureDescription() const override { return "Input(28x28) -> Simplified Feature Extractor -> Dense Classifier -> Softmax(10)"; }
+    virtual std::string getStructureDescription() const override { return "Input(28x28) -> Conv(8,3x3) -> MaxPool -> Conv(16,3x3) -> MaxPool -> Dense(10) -> Softmax"; }
     virtual Metrics testAndGetMetrics(const std::vector<std::vector<double>>& images, const std::vector<int>& labels) override { return buildMetricsSnapshot(*this, images, labels); }
-    std::vector<std::vector<std::vector<double>>> getConvKernels() const { std::vector<std::vector<std::vector<double>>> ret; return ret; }
+    std::vector<std::vector<std::vector<double>>> getConvKernels() const { return conv1Kernels; }
     std::vector<std::vector<double>> getFCWeights() const { return fcWeights; }
 
 private:
     static const int OUTPUT_SIZE = 10;
-    
-    // Persisted dense-layer parameters for the simplified CNN.
+    static const int INPUT_HEIGHT = 28;
+    static const int INPUT_WIDTH = 28;
+    static const int CONV1_CHANNELS = 8;
+    static const int CONV2_CHANNELS = 16;
+    static const int KERNEL_SIZE = 3;
+    static const int POOL_SIZE = 2;
+    static const int CONV1_HEIGHT = INPUT_HEIGHT - KERNEL_SIZE + 1;
+    static const int CONV1_WIDTH = INPUT_WIDTH - KERNEL_SIZE + 1;
+    static const int POOL1_HEIGHT = CONV1_HEIGHT / POOL_SIZE;
+    static const int POOL1_WIDTH = CONV1_WIDTH / POOL_SIZE;
+    static const int CONV2_HEIGHT = POOL1_HEIGHT - KERNEL_SIZE + 1;
+    static const int CONV2_WIDTH = POOL1_WIDTH - KERNEL_SIZE + 1;
+    static const int POOL2_HEIGHT = CONV2_HEIGHT / POOL_SIZE;
+    static const int POOL2_WIDTH = CONV2_WIDTH / POOL_SIZE;
+    static const int FLATTEN_SIZE = CONV2_CHANNELS * POOL2_HEIGHT * POOL2_WIDTH;
+
+    using Matrix = std::vector<std::vector<double>>;
+    using Tensor3 = std::vector<std::vector<std::vector<double>>>;
+    using Tensor4 = std::vector<std::vector<std::vector<std::vector<double>>>>;
+    using Mask3 = std::vector<std::vector<std::vector<int>>>;
+
+    Tensor3 conv1Kernels;
+    std::vector<double> conv1Biases;
+    Tensor4 conv2Kernels;
+    std::vector<double> conv2Biases;
     std::vector<std::vector<double>> fcWeights;
     std::vector<double> fcBiases;
+
+    struct ForwardCache {
+        Matrix input;
+        Tensor3 conv1Pre;
+        Tensor3 conv1Act;
+        Tensor3 pool1;
+        Mask3 pool1Mask;
+        Tensor3 conv2Pre;
+        Tensor3 conv2Act;
+        Tensor3 pool2;
+        Mask3 pool2Mask;
+        std::vector<double> flattened;
+        std::vector<double> logits;
+        std::vector<double> probabilities;
+    };
+
+    Matrix reshapeInput(const std::vector<double>& image) const {
+        Matrix reshaped(INPUT_HEIGHT, std::vector<double>(INPUT_WIDTH, 0.0));
+        for (int r = 0; r < INPUT_HEIGHT; ++r) {
+            for (int c = 0; c < INPUT_WIDTH; ++c) {
+                reshaped[r][c] = image[r * INPUT_WIDTH + c];
+            }
+        }
+        return reshaped;
+    }
+
+    void initializeParameters() {
+        std::mt19937 rng(std::chrono::system_clock::now().time_since_epoch().count());
+        std::normal_distribution<double> conv1Dist(0.0, std::sqrt(2.0 / (KERNEL_SIZE * KERNEL_SIZE)));
+        std::normal_distribution<double> conv2Dist(0.0, std::sqrt(2.0 / (CONV1_CHANNELS * KERNEL_SIZE * KERNEL_SIZE)));
+        std::normal_distribution<double> fcDist(0.0, std::sqrt(2.0 / FLATTEN_SIZE));
+
+        conv1Kernels.assign(CONV1_CHANNELS,
+            Matrix(KERNEL_SIZE, std::vector<double>(KERNEL_SIZE, 0.0)));
+        conv1Biases.assign(CONV1_CHANNELS, 0.0);
+        for (int oc = 0; oc < CONV1_CHANNELS; ++oc) {
+            for (int kr = 0; kr < KERNEL_SIZE; ++kr) {
+                for (int kc = 0; kc < KERNEL_SIZE; ++kc) {
+                    conv1Kernels[oc][kr][kc] = conv1Dist(rng);
+                }
+            }
+        }
+
+        conv2Kernels.assign(CONV2_CHANNELS,
+            Tensor3(CONV1_CHANNELS, Matrix(KERNEL_SIZE, std::vector<double>(KERNEL_SIZE, 0.0))));
+        conv2Biases.assign(CONV2_CHANNELS, 0.0);
+        for (int oc = 0; oc < CONV2_CHANNELS; ++oc) {
+            for (int ic = 0; ic < CONV1_CHANNELS; ++ic) {
+                for (int kr = 0; kr < KERNEL_SIZE; ++kr) {
+                    for (int kc = 0; kc < KERNEL_SIZE; ++kc) {
+                        conv2Kernels[oc][ic][kr][kc] = conv2Dist(rng);
+                    }
+                }
+            }
+        }
+
+        fcWeights.assign(OUTPUT_SIZE, std::vector<double>(FLATTEN_SIZE, 0.0));
+        fcBiases.assign(OUTPUT_SIZE, 0.0);
+        for (int o = 0; o < OUTPUT_SIZE; ++o) {
+            for (int i = 0; i < FLATTEN_SIZE; ++i) {
+                fcWeights[o][i] = fcDist(rng);
+            }
+        }
+    }
+
+    bool isInitialized() const {
+        return !conv1Kernels.empty() && !conv2Kernels.empty() &&
+               !fcWeights.empty() && !fcWeights[0].empty();
+    }
+
+    Tensor3 convForwardSingleChannel(const Matrix& input,
+                                     const Tensor3& kernels,
+                                     const std::vector<double>& biases) const {
+        const int outChannels = static_cast<int>(kernels.size());
+        const int outHeight = static_cast<int>(input.size()) - KERNEL_SIZE + 1;
+        const int outWidth = static_cast<int>(input[0].size()) - KERNEL_SIZE + 1;
+        Tensor3 output(outChannels, Matrix(outHeight, std::vector<double>(outWidth, 0.0)));
+
+        for (int oc = 0; oc < outChannels; ++oc) {
+            for (int r = 0; r < outHeight; ++r) {
+                for (int c = 0; c < outWidth; ++c) {
+                    double sum = biases[oc];
+                    for (int kr = 0; kr < KERNEL_SIZE; ++kr) {
+                        for (int kc = 0; kc < KERNEL_SIZE; ++kc) {
+                            sum += input[r + kr][c + kc] * kernels[oc][kr][kc];
+                        }
+                    }
+                    output[oc][r][c] = sum;
+                }
+            }
+        }
+        return output;
+    }
+
+    Tensor3 convForwardMultiChannel(const Tensor3& input,
+                                    const Tensor4& kernels,
+                                    const std::vector<double>& biases) const {
+        const int outChannels = static_cast<int>(kernels.size());
+        const int inChannels = static_cast<int>(input.size());
+        const int outHeight = static_cast<int>(input[0].size()) - KERNEL_SIZE + 1;
+        const int outWidth = static_cast<int>(input[0][0].size()) - KERNEL_SIZE + 1;
+        Tensor3 output(outChannels, Matrix(outHeight, std::vector<double>(outWidth, 0.0)));
+
+        for (int oc = 0; oc < outChannels; ++oc) {
+            for (int r = 0; r < outHeight; ++r) {
+                for (int c = 0; c < outWidth; ++c) {
+                    double sum = biases[oc];
+                    for (int ic = 0; ic < inChannels; ++ic) {
+                        for (int kr = 0; kr < KERNEL_SIZE; ++kr) {
+                            for (int kc = 0; kc < KERNEL_SIZE; ++kc) {
+                                sum += input[ic][r + kr][c + kc] * kernels[oc][ic][kr][kc];
+                            }
+                        }
+                    }
+                    output[oc][r][c] = sum;
+                }
+            }
+        }
+        return output;
+    }
+
+    void applyReLU(Tensor3& tensor) const {
+        for (auto& channel : tensor) {
+            for (auto& row : channel) {
+                for (double& value : row) {
+                    if (value < 0.0) {
+                        value = 0.0;
+                    }
+                }
+            }
+        }
+    }
+
+    std::pair<Tensor3, Mask3> maxPool(const Tensor3& input) const {
+        const int channels = static_cast<int>(input.size());
+        const int outHeight = static_cast<int>(input[0].size()) / POOL_SIZE;
+        const int outWidth = static_cast<int>(input[0][0].size()) / POOL_SIZE;
+        Tensor3 pooled(channels, Matrix(outHeight, std::vector<double>(outWidth, 0.0)));
+        Mask3 mask(channels, std::vector<std::vector<int>>(outHeight, std::vector<int>(outWidth, 0)));
+
+        for (int ch = 0; ch < channels; ++ch) {
+            for (int r = 0; r < outHeight; ++r) {
+                for (int c = 0; c < outWidth; ++c) {
+                    double bestValue = -std::numeric_limits<double>::infinity();
+                    int bestOffset = 0;
+                    for (int pr = 0; pr < POOL_SIZE; ++pr) {
+                        for (int pc = 0; pc < POOL_SIZE; ++pc) {
+                            const int inputRow = r * POOL_SIZE + pr;
+                            const int inputCol = c * POOL_SIZE + pc;
+                            const double candidate = input[ch][inputRow][inputCol];
+                            const int offset = pr * POOL_SIZE + pc;
+                            if (candidate > bestValue) {
+                                bestValue = candidate;
+                                bestOffset = offset;
+                            }
+                        }
+                    }
+                    pooled[ch][r][c] = bestValue;
+                    mask[ch][r][c] = bestOffset;
+                }
+            }
+        }
+
+        return {pooled, mask};
+    }
+
+    std::vector<double> flatten(const Tensor3& tensor) const {
+        std::vector<double> values;
+        values.reserve(FLATTEN_SIZE);
+        for (const auto& channel : tensor) {
+            for (const auto& row : channel) {
+                values.insert(values.end(), row.begin(), row.end());
+            }
+        }
+        return values;
+    }
+
+    Tensor3 unflatten(const std::vector<double>& values) const {
+        Tensor3 tensor(CONV2_CHANNELS, Matrix(POOL2_HEIGHT, std::vector<double>(POOL2_WIDTH, 0.0)));
+        size_t index = 0;
+        for (int ch = 0; ch < CONV2_CHANNELS; ++ch) {
+            for (int r = 0; r < POOL2_HEIGHT; ++r) {
+                for (int c = 0; c < POOL2_WIDTH; ++c) {
+                    tensor[ch][r][c] = values[index++];
+                }
+            }
+        }
+        return tensor;
+    }
+
+    std::vector<double> softmax(const std::vector<double>& logits) const {
+        std::vector<double> probs = logits;
+        const double maxLogit = *std::max_element(probs.begin(), probs.end());
+        double sumExp = 0.0;
+        for (double& value : probs) {
+            value = std::exp(value - maxLogit);
+            sumExp += value;
+        }
+        for (double& value : probs) {
+            value /= sumExp;
+        }
+        return probs;
+    }
+
+    ForwardCache forward(const std::vector<double>& image) const {
+        ForwardCache cache;
+        cache.input = reshapeInput(image);
+        cache.conv1Pre = convForwardSingleChannel(cache.input, conv1Kernels, conv1Biases);
+        cache.conv1Act = cache.conv1Pre;
+        applyReLU(cache.conv1Act);
+
+        auto pool1Result = maxPool(cache.conv1Act);
+        cache.pool1 = std::move(pool1Result.first);
+        cache.pool1Mask = std::move(pool1Result.second);
+
+        cache.conv2Pre = convForwardMultiChannel(cache.pool1, conv2Kernels, conv2Biases);
+        cache.conv2Act = cache.conv2Pre;
+        applyReLU(cache.conv2Act);
+
+        auto pool2Result = maxPool(cache.conv2Act);
+        cache.pool2 = std::move(pool2Result.first);
+        cache.pool2Mask = std::move(pool2Result.second);
+
+        cache.flattened = flatten(cache.pool2);
+        cache.logits.assign(OUTPUT_SIZE, 0.0);
+        for (int o = 0; o < OUTPUT_SIZE; ++o) {
+            double sum = fcBiases[o];
+            for (int i = 0; i < FLATTEN_SIZE; ++i) {
+                sum += fcWeights[o][i] * cache.flattened[i];
+            }
+            cache.logits[o] = sum;
+        }
+        cache.probabilities = softmax(cache.logits);
+        return cache;
+    }
+
+    Tensor3 maxPoolBackward(const Tensor3& pooledGradient,
+                            const Mask3& mask,
+                            int inputHeight,
+                            int inputWidth) const {
+        const int channels = static_cast<int>(pooledGradient.size());
+        Tensor3 grad(channels, Matrix(inputHeight, std::vector<double>(inputWidth, 0.0)));
+        const int outHeight = static_cast<int>(pooledGradient[0].size());
+        const int outWidth = static_cast<int>(pooledGradient[0][0].size());
+
+        for (int ch = 0; ch < channels; ++ch) {
+            for (int r = 0; r < outHeight; ++r) {
+                for (int c = 0; c < outWidth; ++c) {
+                    const int offset = mask[ch][r][c];
+                    const int pr = offset / POOL_SIZE;
+                    const int pc = offset % POOL_SIZE;
+                    grad[ch][r * POOL_SIZE + pr][c * POOL_SIZE + pc] += pooledGradient[ch][r][c];
+                }
+            }
+        }
+        return grad;
+    }
 
 public:
     std::string getName() const override {
@@ -1289,10 +1629,11 @@ public:
     }
 
     std::string getDescription() const override {
-        return "Convolutional-style network with two feature stages, pooling and a dense output head";
+        return "Two-layer convolutional neural network with ReLU, max pooling and Softmax output";
     }
 
     void initWeights() override {
+        initializeParameters();
         std::cout << "CNN weights initialized" << std::endl;
     }
 
@@ -1302,19 +1643,44 @@ public:
             std::cerr << "Failed to open parameter file " << filename << std::endl;
             return false;
         }
-        
-        fcWeights.assign(OUTPUT_SIZE, std::vector<double>(64 * 4 * 4));
+        conv1Kernels.assign(CONV1_CHANNELS, Matrix(KERNEL_SIZE, std::vector<double>(KERNEL_SIZE, 0.0)));
+        conv1Biases.assign(CONV1_CHANNELS, 0.0);
+        conv2Kernels.assign(CONV2_CHANNELS, Tensor3(CONV1_CHANNELS, Matrix(KERNEL_SIZE, std::vector<double>(KERNEL_SIZE, 0.0))));
+        conv2Biases.assign(CONV2_CHANNELS, 0.0);
+        fcWeights.assign(OUTPUT_SIZE, std::vector<double>(FLATTEN_SIZE, 0.0));
         fcBiases.assign(OUTPUT_SIZE, 0.0);
-        
-        // Read fcWeights.
-        for (int i = 0; i < OUTPUT_SIZE; ++i) {
-            for (int j = 0; j < 64 * 4 * 4; ++j) {
-                file >> fcWeights[i][j];
+
+        for (int oc = 0; oc < CONV1_CHANNELS; ++oc) {
+            for (int kr = 0; kr < KERNEL_SIZE; ++kr) {
+                for (int kc = 0; kc < KERNEL_SIZE; ++kc) {
+                    file >> conv1Kernels[oc][kr][kc];
+                }
             }
         }
-        // Read fcBiases.
-        for (int i = 0; i < OUTPUT_SIZE; ++i) {
-            file >> fcBiases[i];
+        for (int oc = 0; oc < CONV1_CHANNELS; ++oc) {
+            file >> conv1Biases[oc];
+        }
+
+        for (int oc = 0; oc < CONV2_CHANNELS; ++oc) {
+            for (int ic = 0; ic < CONV1_CHANNELS; ++ic) {
+                for (int kr = 0; kr < KERNEL_SIZE; ++kr) {
+                    for (int kc = 0; kc < KERNEL_SIZE; ++kc) {
+                        file >> conv2Kernels[oc][ic][kr][kc];
+                    }
+                }
+            }
+        }
+        for (int oc = 0; oc < CONV2_CHANNELS; ++oc) {
+            file >> conv2Biases[oc];
+        }
+
+        for (int o = 0; o < OUTPUT_SIZE; ++o) {
+            for (int i = 0; i < FLATTEN_SIZE; ++i) {
+                file >> fcWeights[o][i];
+            }
+        }
+        for (int o = 0; o < OUTPUT_SIZE; ++o) {
+            file >> fcBiases[o];
         }
         
         std::cout << "Parameters loaded from " << filename << std::endl;
@@ -1327,18 +1693,42 @@ public:
             std::cerr << "Failed to open file: " << filename << std::endl;
             return;
         }
-        
-        // 淇濆瓨fcWeights
-        for (int i = 0; i < OUTPUT_SIZE; ++i) {
-            for (int j = 0; j < 64 * 4 * 4; ++j) {
-                file << fcWeights[i][j] << " ";
+        for (int oc = 0; oc < CONV1_CHANNELS; ++oc) {
+            for (int kr = 0; kr < KERNEL_SIZE; ++kr) {
+                for (int kc = 0; kc < KERNEL_SIZE; ++kc) {
+                    file << conv1Kernels[oc][kr][kc] << " ";
+                }
             }
             file << "\n";
         }
-        
-        // 淇濆瓨fcBiases
-        for (int i = 0; i < OUTPUT_SIZE; ++i) {
-            file << fcBiases[i] << " ";
+        for (int oc = 0; oc < CONV1_CHANNELS; ++oc) {
+            file << conv1Biases[oc] << " ";
+        }
+        file << "\n";
+
+        for (int oc = 0; oc < CONV2_CHANNELS; ++oc) {
+            for (int ic = 0; ic < CONV1_CHANNELS; ++ic) {
+                for (int kr = 0; kr < KERNEL_SIZE; ++kr) {
+                    for (int kc = 0; kc < KERNEL_SIZE; ++kc) {
+                        file << conv2Kernels[oc][ic][kr][kc] << " ";
+                    }
+                }
+                file << "\n";
+            }
+        }
+        for (int oc = 0; oc < CONV2_CHANNELS; ++oc) {
+            file << conv2Biases[oc] << " ";
+        }
+        file << "\n";
+
+        for (int o = 0; o < OUTPUT_SIZE; ++o) {
+            for (int i = 0; i < FLATTEN_SIZE; ++i) {
+                file << fcWeights[o][i] << " ";
+            }
+            file << "\n";
+        }
+        for (int o = 0; o < OUTPUT_SIZE; ++o) {
+            file << fcBiases[o] << " ";
         }
         
         std::cout << "Parameters saved to " << filename << std::endl;
@@ -1347,98 +1737,125 @@ public:
     void train(const std::vector<std::vector<double>>& images,
               const std::vector<int>& labels, int epochs) override {
         std::cout << "\nCNN training started (" << epochs << " epochs, batch_size=" << CNN_BATCH_SIZE << ")..." << std::endl;
-        std::cout << "  Network: 2 feature stages + 2 pooling stages + dense classifier" << std::endl;
+        std::cout << "  Network: Conv(8,3x3) -> MaxPool -> Conv(16,3x3) -> MaxPool -> Dense(10)" << std::endl;
         const auto started = std::chrono::steady_clock::now();
         const int totalUnits = std::max(1, epochs * static_cast<int>(images.size()));
-        
-        // If no parameters were loaded, initialize a fresh model.
-        bool isNewTraining = fcWeights.empty() || fcWeights[0].empty();
-        
-        if (isNewTraining) {
+        if (!isInitialized()) {
+            initializeParameters();
             std::cout << "  Initialization: He init" << std::endl;
         } else {
             std::cout << "  Initialization: load existing parameters" << std::endl;
         }
-        
-        // Initialize or keep the existing weights.
-        if (isNewTraining) {
-            fcWeights.assign(OUTPUT_SIZE, std::vector<double>(64 * 4 * 4));
-            fcBiases.assign(OUTPUT_SIZE, 0.0);
-            
-            std::mt19937 rng(std::chrono::system_clock::now().time_since_epoch().count());
-            // He initialization: std = sqrt(2 / fan_in).
-            double std_w = std::sqrt(2.0 / (64 * 4 * 4));
-            std::normal_distribution<double> dist(0.0, std_w);
-            
-            for (auto& row : fcWeights) {
-                for (auto& v : row) v = dist(rng);
-            }
-        }
-        
+
         for (int epoch = 0; epoch < epochs; ++epoch) {
             double totalLoss = 0.0;
             int correctPredictions = 0;
-            
-            // Process one mini-batch.
+
             for (size_t batchStart = 0; batchStart < images.size(); batchStart += CNN_BATCH_SIZE) {
                 size_t batchEnd = std::min(batchStart + CNN_BATCH_SIZE, images.size());
-                
-                // Report training progress.
                 ProgressBar::show(batchEnd, images.size(), "Processing data");
                 const int completedUnits = epoch * static_cast<int>(images.size()) + static_cast<int>(batchEnd);
                 reportProgress(completedUnits, totalUnits,
                                static_cast<double>(completedUnits) / totalUnits,
                                estimateRemainingSeconds(started, completedUnits, totalUnits));
-            
+
                 for (size_t idx = batchStart; idx < batchEnd; ++idx) {
-                    const auto& image = images[idx];
+                    const auto cache = forward(images[idx]);
                     int label = labels[idx];
-                    
-                    // Simplified CNN forward pass with handcrafted feature extraction.
-                    std::vector<double> features(64 * 4 * 4);
-                    for (size_t i = 0; i < features.size(); ++i) {
-                        features[i] = image[i % image.size()] * 0.5;
-                    }
-                    
-                    // Dense output layer.
-                    std::vector<double> output(OUTPUT_SIZE, 0.0);
-                    for (int o = 0; o < OUTPUT_SIZE; ++o) {
-                        for (size_t i = 0; i < features.size(); ++i) {
-                            output[o] += fcWeights[o][i] * features[i];
-                        }
-                        output[o] += fcBiases[o];
-                    }
-                    
-                    // Softmax
-                    double maxOut = *std::max_element(output.begin(), output.end());
-                    double sumExp = 0.0;
-                    for (auto& o : output) {
-                        o = std::exp(o - maxOut);
-                        sumExp += o;
-                    }
-                    for (auto& o : output) o /= sumExp;
-                    
-                    // Cross-entropy loss.
-                    double loss = -std::log(std::max(output[label], 1e-7));
+
+                    double loss = -std::log(std::max(cache.probabilities[label], 1e-7));
                     totalLoss += loss;
-                    
-                    // Predicted class.
-                    int predictedClass = std::distance(output.begin(), 
-                                                       std::max_element(output.begin(), output.end()));
+
+                    int predictedClass = static_cast<int>(std::distance(
+                        cache.probabilities.begin(),
+                        std::max_element(cache.probabilities.begin(), cache.probabilities.end())));
                     if (predictedClass == label) correctPredictions++;
-                    
-                    // Gradient descent update.
-                    double learningRate = CNN_LEARNING_RATE;
+
+                    std::vector<double> dLogits = cache.probabilities;
+                    dLogits[label] -= 1.0;
+                    std::vector<double> dFlatten(FLATTEN_SIZE, 0.0);
+
                     for (int o = 0; o < OUTPUT_SIZE; ++o) {
-                        double gradient = output[o] - (o == label ? 1.0 : 0.0);
-                        for (size_t i = 0; i < features.size(); ++i) {
-                            fcWeights[o][i] -= learningRate * gradient * features[i];
+                        for (int i = 0; i < FLATTEN_SIZE; ++i) {
+                            dFlatten[i] += fcWeights[o][i] * dLogits[o];
+                            fcWeights[o][i] -= CNN_LEARNING_RATE * dLogits[o] * cache.flattened[i];
                         }
-                        fcBiases[o] -= learningRate * gradient;
+                        fcBiases[o] -= CNN_LEARNING_RATE * dLogits[o];
+                    }
+
+                    Tensor3 dPool2 = unflatten(dFlatten);
+                    Tensor3 dConv2Act = maxPoolBackward(dPool2, cache.pool2Mask, CONV2_HEIGHT, CONV2_WIDTH);
+                    for (int oc = 0; oc < CONV2_CHANNELS; ++oc) {
+                        for (int r = 0; r < CONV2_HEIGHT; ++r) {
+                            for (int c = 0; c < CONV2_WIDTH; ++c) {
+                                if (cache.conv2Pre[oc][r][c] <= 0.0) {
+                                    dConv2Act[oc][r][c] = 0.0;
+                                }
+                            }
+                        }
+                    }
+
+                    Tensor3 dPool1(CONV1_CHANNELS, Matrix(POOL1_HEIGHT, std::vector<double>(POOL1_WIDTH, 0.0)));
+                    for (int oc = 0; oc < CONV2_CHANNELS; ++oc) {
+                        for (int ic = 0; ic < CONV1_CHANNELS; ++ic) {
+                            for (int kr = 0; kr < KERNEL_SIZE; ++kr) {
+                                for (int kc = 0; kc < KERNEL_SIZE; ++kc) {
+                                    double kernelGradient = 0.0;
+                                    for (int r = 0; r < CONV2_HEIGHT; ++r) {
+                                        for (int c = 0; c < CONV2_WIDTH; ++c) {
+                                            kernelGradient += dConv2Act[oc][r][c] * cache.pool1[ic][r + kr][c + kc];
+                                            dPool1[ic][r + kr][c + kc] += dConv2Act[oc][r][c] * conv2Kernels[oc][ic][kr][kc];
+                                        }
+                                    }
+                                    conv2Kernels[oc][ic][kr][kc] -= CNN_LEARNING_RATE * kernelGradient;
+                                }
+                            }
+                        }
+
+                        double biasGradient = 0.0;
+                        for (int r = 0; r < CONV2_HEIGHT; ++r) {
+                            for (int c = 0; c < CONV2_WIDTH; ++c) {
+                                biasGradient += dConv2Act[oc][r][c];
+                            }
+                        }
+                        conv2Biases[oc] -= CNN_LEARNING_RATE * biasGradient;
+                    }
+
+                    Tensor3 dConv1Act = maxPoolBackward(dPool1, cache.pool1Mask, CONV1_HEIGHT, CONV1_WIDTH);
+                    for (int oc = 0; oc < CONV1_CHANNELS; ++oc) {
+                        for (int r = 0; r < CONV1_HEIGHT; ++r) {
+                            for (int c = 0; c < CONV1_WIDTH; ++c) {
+                                if (cache.conv1Pre[oc][r][c] <= 0.0) {
+                                    dConv1Act[oc][r][c] = 0.0;
+                                }
+                            }
+                        }
+                    }
+
+                    for (int oc = 0; oc < CONV1_CHANNELS; ++oc) {
+                        for (int kr = 0; kr < KERNEL_SIZE; ++kr) {
+                            for (int kc = 0; kc < KERNEL_SIZE; ++kc) {
+                                double kernelGradient = 0.0;
+                                for (int r = 0; r < CONV1_HEIGHT; ++r) {
+                                    for (int c = 0; c < CONV1_WIDTH; ++c) {
+                                        kernelGradient += dConv1Act[oc][r][c] * cache.input[r + kr][c + kc];
+                                    }
+                                }
+                                conv1Kernels[oc][kr][kc] -= CNN_LEARNING_RATE * kernelGradient;
+                            }
+                        }
+
+                        double biasGradient = 0.0;
+                        for (int r = 0; r < CONV1_HEIGHT; ++r) {
+                            for (int c = 0; c < CONV1_WIDTH; ++c) {
+                                biasGradient += dConv1Act[oc][r][c];
+                            }
+                        }
+                        conv1Biases[oc] -= CNN_LEARNING_RATE * biasGradient;
                     }
                 }
             }
-            
+
             ProgressBar::finish();
             double accuracy = static_cast<double>(correctPredictions) / images.size();
             std::cout << "Epoch " << epoch + 1 << "/" << epochs 
@@ -1452,125 +1869,45 @@ public:
     }
 
     int predict(const std::vector<double>& image) override {
-        // Return a default class if the model is not trained yet.
-        if (fcWeights.empty() || fcWeights[0].empty()) {
-            return 0;
+        if (!isInitialized()) {
+            throw std::runtime_error("CNN model parameters are not initialized.");
         }
-        
-        // Simplified feature extraction.
-        std::vector<double> features(64 * 4 * 4);
-        for (size_t i = 0; i < features.size(); ++i) {
-            features[i] = image[i % image.size()] * 0.5;  // Keep this consistent with train().
-        }
-        
-        // Run inference with trained weights.
-        std::vector<double> output(OUTPUT_SIZE, 0.0);
-        for (int o = 0; o < OUTPUT_SIZE; ++o) {
-            for (size_t i = 0; i < features.size(); ++i) {
-                output[o] += fcWeights[o][i] * features[i];
-            }
-            output[o] += fcBiases[o];
-        }
-        
-        return std::distance(output.begin(), 
-                           std::max_element(output.begin(), output.end()));
+
+        const auto cache = forward(image);
+        return static_cast<int>(std::distance(cache.probabilities.begin(),
+                           std::max_element(cache.probabilities.begin(), cache.probabilities.end())));
     }
 
     std::vector<double> predictProba(const std::vector<double>& image) override {
-        std::vector<double> output(OUTPUT_SIZE, 0.0);
-        
-        if (fcWeights.empty() || fcWeights[0].empty()) {
-            for (auto& o : output) o = 0.1;
-            return output;
+        if (!isInitialized()) {
+            return std::vector<double>(OUTPUT_SIZE, 1.0 / OUTPUT_SIZE);
         }
-        
-        // Feature extraction.
-        std::vector<double> features(64 * 4 * 4);
-        for (size_t i = 0; i < features.size(); ++i) {
-            features[i] = image[i % image.size()] * 0.5;  // Keep this consistent with train().
-        }
-        
-        // Use trained weights for inference.
-        for (int o = 0; o < OUTPUT_SIZE; ++o) {
-            for (size_t i = 0; i < features.size(); ++i) {
-                output[o] += fcWeights[o][i] * features[i];
-            }
-            output[o] += fcBiases[o];
-        }
-        
-        // Softmax
-        double maxOut = *std::max_element(output.begin(), output.end());
-        double sumExp = 0.0;
-        for (auto& o : output) {
-            o = std::exp(o - maxOut);
-            sumExp += o;
-        }
-        for (auto& o : output) o /= sumExp;
-        
-        return output;
+
+        return forward(image).probabilities;
     }
 
     double evaluate(const std::vector<std::vector<double>>& images,
                    const std::vector<int>& labels) override {
-        int correct = 0;
-        for (size_t i = 0; i < images.size(); ++i) {
-            if (predict(images[i]) == labels[i]) correct++;
-        }
-        return static_cast<double>(correct) / images.size();
+        return computeAccuracyFromPredictions(*this, images, labels);
     }
 
     std::vector<std::vector<int>> computeConfusionMatrix(
         const std::vector<std::vector<double>>& images,
         const std::vector<int>& labels) override {
-        // Compute the confusion matrix from predictions.
-        std::vector<std::vector<int>> matrix(OUTPUT_SIZE, std::vector<int>(OUTPUT_SIZE, 0));
-        for (size_t i = 0; i < images.size(); ++i) {
-            int predicted = predict(images[i]);
-            matrix[labels[i]][predicted]++;
-        }
-        return matrix;
+        return computeConfusionMatrixFromPredictions(*this, images, labels);
     }
 
     void computeMetrics(const std::vector<std::vector<int>>& matrix,
                        std::vector<double>& precision,
                        std::vector<double>& recall,
                        std::vector<double>& f1) override {
-        // Compute per-class precision, recall, and F1.
-        precision.resize(OUTPUT_SIZE);
-        recall.resize(OUTPUT_SIZE);
-        f1.resize(OUTPUT_SIZE);
-        for (int c = 0; c < OUTPUT_SIZE; ++c) {
-            int tp = matrix[c][c];
-            int fp = 0, fn = 0;
-            for (int i = 0; i < OUTPUT_SIZE; ++i) {
-                if (i != c) {
-                    fp += matrix[i][c];
-                    fn += matrix[c][i];
-                }
-            }
-            precision[c] = (tp + fp > 0) ? static_cast<double>(tp) / (tp + fp) : 0.0;
-            recall[c] = (tp + fn > 0) ? static_cast<double>(tp) / (tp + fn) : 0.0;
-            f1[c] = (precision[c] + recall[c] > 0) ?
-                    2 * precision[c] * recall[c] / (precision[c] + recall[c]) : 0.0;
-        }
+        computePerClassMetricsFromConfusionMatrix(matrix, precision, recall, f1);
     }
 
     double computeAUC(const std::vector<std::vector<double>>& images,
                      const std::vector<int>& labels,
                      std::string& rocFilename) override {
-        rocFilename = getROCDataFilename();
-        std::vector<double> scores;
-        std::vector<int> binaryLabels;
-        scores.reserve(images.size());
-        binaryLabels.reserve(images.size());
-
-        for (size_t i = 0; i < images.size(); ++i) {
-            auto prob = predictProba(images[i]);
-            scores.push_back(prob[0]);
-            binaryLabels.push_back(labels[i] == 0 ? 1 : 0);
-        }
-
-        return writeRocDataAndComputeAUC(scores, binaryLabels, rocFilename);
+        return computeMacroAUCFromProbabilities(*this, images, labels, rocFilename);
     }
 
     std::string getROCDataFilename() const override {
@@ -1579,27 +1916,7 @@ public:
 
     void evaluateAndReport(const std::vector<std::vector<double>>& images,
                           const std::vector<int>& labels) override {
-        double acc = evaluate(images, labels);
-        auto matrix = computeConfusionMatrix(images, labels);
-        std::vector<double> precision, recall, f1;
-        computeMetrics(matrix, precision, recall, f1);
-        
-        double avgPrecision = 0.0, avgRecall = 0.0, avgF1 = 0.0;
-        for (int c = 0; c < OUTPUT_SIZE; ++c) {
-            avgPrecision += precision[c];
-            avgRecall += recall[c];
-            avgF1 += f1[c];
-        }
-        avgPrecision /= OUTPUT_SIZE;
-        avgRecall /= OUTPUT_SIZE;
-        avgF1 /= OUTPUT_SIZE;
-        
-        std::cout << "\n========== CNN Test Results ==========" << std::endl;
-        std::cout << "Accuracy:  " << std::fixed << std::setprecision(4) << acc * 100 << "%" << std::endl;
-        std::cout << "Precision: " << std::setprecision(4) << avgPrecision * 100 << "%" << std::endl;
-        std::cout << "Recall:    " << std::setprecision(4) << avgRecall * 100 << "%" << std::endl;
-        std::cout << "F1 Score:  " << std::setprecision(4) << avgF1 * 100 << "%" << std::endl;
-        std::cout << "========================================" << std::endl;
+        printEvaluationReport("CNN", *this, images, labels);
     }
 };
 
@@ -1964,6 +2281,7 @@ public:
                   << ", trees=" << RF_NUM_TREES << ")..." << std::endl;
         std::cout << "  Trees: decision-tree ensemble | max depth: " << RF_MAX_DEPTH
                   << " | features per split: " << RF_FEATURES_PER_SPLIT << std::endl;
+        std::cout << "  Standard random forest is not epoch-optimized; the epoch parameter is ignored and a fixed-size forest is built." << std::endl;
         std::cout << "  Initialization: bootstrap over full training set + random feature subsets | evaluation: vote average" << std::endl;
         const auto started = std::chrono::steady_clock::now();
         const int totalUnits = std::max(1, RF_NUM_TREES);
@@ -1971,56 +2289,42 @@ public:
         std::vector<int> allSampleIndices(images.size());
         std::iota(allSampleIndices.begin(), allSampleIndices.end(), 0);
 
-        for (int epoch = 0; epoch < epochs; ++epoch) {
-            int remainingTrees = RF_NUM_TREES - static_cast<int>(forest.size());
-            if (remainingTrees <= 0) {
-                break;
-            }
+        forest.clear();
+        double totalLoss = 0.0;
+        int correctPredictions = 0;
+        size_t sampleCount = 0;
 
-            int remainingEpochs = epochs - epoch;
-            int treesThisEpoch = std::max(1, remainingTrees / remainingEpochs);
-            treesThisEpoch = std::min(treesThisEpoch, remainingTrees);
+        for (int treeIndex = 0; treeIndex < RF_NUM_TREES; ++treeIndex) {
+            std::vector<int> bootstrapSample = createBootstrapSample(allSampleIndices);
 
-            double totalLoss = 0.0;
-            int correctPredictions = 0;
-            size_t sampleCount = 0;
+            std::vector<TreeNode> tree;
+            tree.reserve((1 << (RF_MAX_DEPTH + 1)) - 1);
+            buildTreeRecursive(images, labels, bootstrapSample, 0, tree);
+            forest.push_back(std::move(tree));
 
-            for (int treeIndex = 0; treeIndex < treesThisEpoch; ++treeIndex) {
-                std::vector<int> bootstrapSample = createBootstrapSample(allSampleIndices);
-
-                std::vector<TreeNode> tree;
-                tree.reserve((1 << (RF_MAX_DEPTH + 1)) - 1);
-                buildTreeRecursive(images, labels, bootstrapSample, 0, tree);
-                forest.push_back(std::move(tree));
-
-                for (int index : bootstrapSample) {
-                    auto probabilities = predictProba(images[index]);
-                    int predictedClass = std::distance(probabilities.begin(), std::max_element(probabilities.begin(), probabilities.end()));
-                    totalLoss += -std::log(std::max(probabilities[labels[index]], 1e-7));
-                    if (predictedClass == labels[index]) {
-                        correctPredictions++;
-                    }
-                    sampleCount++;
+            for (int index : bootstrapSample) {
+                auto probabilities = predictProba(images[index]);
+                int predictedClass = std::distance(probabilities.begin(), std::max_element(probabilities.begin(), probabilities.end()));
+                totalLoss += -std::log(std::max(probabilities[labels[index]], 1e-7));
+                if (predictedClass == labels[index]) {
+                    correctPredictions++;
                 }
-
-                ProgressBar::show(forest.size(), RF_NUM_TREES, "Building forest");
-                const int completedUnits = static_cast<int>(forest.size());
-                reportProgress(completedUnits, totalUnits,
-                               static_cast<double>(completedUnits) / totalUnits,
-                               estimateRemainingSeconds(started, completedUnits, totalUnits));
+                sampleCount++;
             }
 
-            ProgressBar::finish();
-            double accuracy = sampleCount > 0 ? static_cast<double>(correctPredictions) / sampleCount : 0.0;
-            double averageLoss = sampleCount > 0 ? totalLoss / sampleCount : 0.0;
-
-            std::cout << "Epoch " << epoch + 1 << "/" << epochs
-                      << " - avg loss: " << std::fixed << std::setprecision(6) << averageLoss
-                      << " - train acc: " << std::setprecision(4)
-                      << accuracy * 100 << "%"
-                      << " - remaining epochs: " << (epochs - epoch - 1) << std::endl;
+            ProgressBar::show(forest.size(), RF_NUM_TREES, "Building forest");
+            const int completedUnits = static_cast<int>(forest.size());
+            reportProgress(completedUnits, totalUnits,
+                           static_cast<double>(completedUnits) / totalUnits,
+                           estimateRemainingSeconds(started, completedUnits, totalUnits));
         }
 
+        ProgressBar::finish();
+        double accuracy = sampleCount > 0 ? static_cast<double>(correctPredictions) / sampleCount : 0.0;
+        double averageLoss = sampleCount > 0 ? totalLoss / sampleCount : 0.0;
+        std::cout << "Forest build summary"
+                  << " - avg loss: " << std::fixed << std::setprecision(6) << averageLoss
+                  << " - train acc: " << std::setprecision(4) << accuracy * 100 << "%" << std::endl;
         std::cout << "Random forest training completed" << std::endl;
     }
 
@@ -2062,65 +2366,26 @@ public:
 
     double evaluate(const std::vector<std::vector<double>>& images,
                    const std::vector<int>& labels) override {
-        int correct = 0;
-        for (size_t i = 0; i < images.size(); ++i) {
-            if (predict(images[i]) == labels[i]) {
-                correct++;
-            }
-        }
-        return static_cast<double>(correct) / images.size();
+        return computeAccuracyFromPredictions(*this, images, labels);
     }
 
     std::vector<std::vector<int>> computeConfusionMatrix(
         const std::vector<std::vector<double>>& images,
         const std::vector<int>& labels) override {
-        std::vector<std::vector<int>> matrix(NUM_CLASSES, std::vector<int>(NUM_CLASSES, 0));
-        for (size_t i = 0; i < images.size(); ++i) {
-            int predicted = predict(images[i]);
-            matrix[labels[i]][predicted]++;
-        }
-        return matrix;
+        return computeConfusionMatrixFromPredictions(*this, images, labels);
     }
 
     void computeMetrics(const std::vector<std::vector<int>>& matrix,
                        std::vector<double>& precision,
                        std::vector<double>& recall,
                        std::vector<double>& f1) override {
-        precision.resize(NUM_CLASSES);
-        recall.resize(NUM_CLASSES);
-        f1.resize(NUM_CLASSES);
-        for (int c = 0; c < NUM_CLASSES; ++c) {
-            int tp = matrix[c][c];
-            int fp = 0, fn = 0;
-            for (int i = 0; i < NUM_CLASSES; ++i) {
-                if (i != c) {
-                    fp += matrix[i][c];
-                    fn += matrix[c][i];
-                }
-            }
-            precision[c] = (tp + fp > 0) ? static_cast<double>(tp) / (tp + fp) : 0.0;
-            recall[c] = (tp + fn > 0) ? static_cast<double>(tp) / (tp + fn) : 0.0;
-            f1[c] = (precision[c] + recall[c] > 0) ?
-                    2 * precision[c] * recall[c] / (precision[c] + recall[c]) : 0.0;
-        }
+        computePerClassMetricsFromConfusionMatrix(matrix, precision, recall, f1);
     }
 
     double computeAUC(const std::vector<std::vector<double>>& images,
                      const std::vector<int>& labels,
                      std::string& rocFilename) override {
-        rocFilename = getROCDataFilename();
-        std::vector<double> scores;
-        std::vector<int> binaryLabels;
-        scores.reserve(images.size());
-        binaryLabels.reserve(images.size());
-
-        for (size_t i = 0; i < images.size(); ++i) {
-            auto prob = predictProba(images[i]);
-            scores.push_back(prob[0]);
-            binaryLabels.push_back(labels[i] == 0 ? 1 : 0);
-        }
-
-        return writeRocDataAndComputeAUC(scores, binaryLabels, rocFilename);
+        return computeMacroAUCFromProbabilities(*this, images, labels, rocFilename);
     }
 
     std::string getROCDataFilename() const override {
@@ -2129,27 +2394,7 @@ public:
 
     void evaluateAndReport(const std::vector<std::vector<double>>& images,
                           const std::vector<int>& labels) override {
-        double acc = evaluate(images, labels);
-        auto matrix = computeConfusionMatrix(images, labels);
-        std::vector<double> precision, recall, f1;
-        computeMetrics(matrix, precision, recall, f1);
-
-        double avgPrecision = 0.0, avgRecall = 0.0, avgF1 = 0.0;
-        for (int c = 0; c < NUM_CLASSES; ++c) {
-            avgPrecision += precision[c];
-            avgRecall += recall[c];
-            avgF1 += f1[c];
-        }
-        avgPrecision /= NUM_CLASSES;
-        avgRecall /= NUM_CLASSES;
-        avgF1 /= NUM_CLASSES;
-
-        std::cout << "\n========== Random Forest Test Results ==========" << std::endl;
-        std::cout << "Accuracy:  " << std::fixed << std::setprecision(4) << acc * 100 << "%" << std::endl;
-        std::cout << "Precision: " << std::setprecision(4) << avgPrecision * 100 << "%" << std::endl;
-        std::cout << "Recall:    " << std::setprecision(4) << avgRecall * 100 << "%" << std::endl;
-        std::cout << "F1 Score:  " << std::setprecision(4) << avgF1 * 100 << "%" << std::endl;
-        std::cout << "========================================" << std::endl;
+        printEvaluationReport("Random Forest", *this, images, labels);
     }
 };
 
@@ -2157,7 +2402,7 @@ public:
 
 class KNNModel : public IClassificationModel {
 public:
-    virtual std::string getStructureDescription() const override { return "Input(784) -> Prototype Library -> k=5 Distance Vote"; }
+    virtual std::string getStructureDescription() const override { return "Input(784) -> Full Training Sample Memory -> k=5 Distance Vote"; }
     virtual Metrics testAndGetMetrics(const std::vector<std::vector<double>>& images, const std::vector<int>& labels) override { return buildMetricsSnapshot(*this, images, labels); }
 
 private:
@@ -2225,14 +2470,14 @@ public:
     }
 
     std::string getDescription() const override {
-        return "KNN classifier using mini-batch prototype construction and distance-based voting";
+        return "Exact KNN classifier storing all training samples and using distance-weighted voting";
     }
 
     void initWeights() override {
         prototypes.clear();
         prototypeLabels.clear();
         rng.seed(std::chrono::system_clock::now().time_since_epoch().count());
-        std::cout << "KNN prototype store initialized" << std::endl;
+        std::cout << "KNN sample store initialized" << std::endl;
     }
 
     bool loadParams(const std::string& filename) override {
@@ -2307,64 +2552,29 @@ public:
 
         std::cout << "\nKNN training started (" << epochs << " epochs, batch_size=" << KNN_BATCH_SIZE
                   << ", k=" << kValue << ")..." << std::endl;
-        std::cout << "  Initialization: mini-batch prototype construction | max prototypes: " << KNN_MAX_PROTOTYPES << std::endl;
+        std::cout << "  Standard KNN does not optimize iteratively; the epoch parameter is ignored after loading the dataset." << std::endl;
+        std::cout << "  Initialization: exact sample store | retained samples: " << images.size() << std::endl;
         const auto started = std::chrono::steady_clock::now();
 
         prototypes.clear();
         prototypeLabels.clear();
-        prototypes.reserve(std::min(static_cast<size_t>(KNN_MAX_PROTOTYPES), images.size()));
-        prototypeLabels.reserve(std::min(static_cast<size_t>(KNN_MAX_PROTOTYPES), images.size()));
+        prototypes.reserve(images.size());
+        prototypeLabels.reserve(labels.size());
 
-        std::vector<size_t> indices(images.size());
-        std::iota(indices.begin(), indices.end(), 0);
-        const int totalUnits = std::max(1, epochs * static_cast<int>(indices.size()));
+        const int totalUnits = std::max(1, static_cast<int>(images.size()));
+        for (size_t i = 0; i < images.size(); ++i) {
+            prototypes.push_back(images[i]);
+            prototypeLabels.push_back(labels[i]);
 
-        for (int epoch = 0; epoch < epochs; ++epoch) {
-            std::shuffle(indices.begin(), indices.end(), rng);
-
-            double totalLoss = 0.0;
-            int correctPredictions = 0;
-            size_t processedSamples = 0;
-
-            for (size_t batchStart = 0; batchStart < indices.size(); batchStart += KNN_BATCH_SIZE) {
-                size_t batchEnd = std::min(batchStart + KNN_BATCH_SIZE, indices.size());
-                size_t batchSize = batchEnd - batchStart;
-
-                for (size_t position = batchStart; position < batchEnd; ++position) {
-                    size_t index = indices[position];
-                    const auto& image = images[index];
-                    int label = labels[index];
-
-                    if (!prototypes.empty()) {
-                        auto probabilities = predictProba(image);
-                        int predictedClass = std::distance(probabilities.begin(), std::max_element(probabilities.begin(), probabilities.end()));
-                        totalLoss += -std::log(std::max(probabilities[label], 1e-7));
-                        if (predictedClass == label) {
-                            correctPredictions++;
-                        }
-                    }
-
-                    addPrototype(image, label);
-                    processedSamples++;
-                }
-
-                ProgressBar::show(batchEnd, indices.size(), "Building prototypes");
-                const int completedUnits = epoch * static_cast<int>(indices.size()) + static_cast<int>(batchEnd);
-                reportProgress(completedUnits, totalUnits,
-                               static_cast<double>(completedUnits) / totalUnits,
-                               estimateRemainingSeconds(started, completedUnits, totalUnits));
-            }
-
-            ProgressBar::finish();
-            double accuracy = processedSamples > 0 ? static_cast<double>(correctPredictions) / processedSamples : 0.0;
-            double averageLoss = processedSamples > 0 ? totalLoss / processedSamples : 0.0;
-            std::cout << "Epoch " << epoch + 1 << "/" << epochs
-                      << " - avg loss: " << std::fixed << std::setprecision(6) << averageLoss
-                      << " - train acc: " << std::setprecision(4)
-                      << accuracy * 100 << "%"
-                      << " - remaining epochs: " << (epochs - epoch - 1) << std::endl;
+            const int completedUnits = static_cast<int>(i + 1);
+            ProgressBar::show(i + 1, images.size(), "Loading samples");
+            reportProgress(completedUnits, totalUnits,
+                           static_cast<double>(completedUnits) / totalUnits,
+                           estimateRemainingSeconds(started, completedUnits, totalUnits));
         }
 
+        ProgressBar::finish();
+        std::cout << "Stored " << prototypes.size() << " training samples for exact KNN search" << std::endl;
         std::cout << "KNN training completed" << std::endl;
     }
 
@@ -2422,65 +2632,26 @@ public:
 
     double evaluate(const std::vector<std::vector<double>>& images,
                    const std::vector<int>& labels) override {
-        int correct = 0;
-        for (size_t i = 0; i < images.size(); ++i) {
-            if (predict(images[i]) == labels[i]) {
-                correct++;
-            }
-        }
-        return static_cast<double>(correct) / images.size();
+        return computeAccuracyFromPredictions(*this, images, labels);
     }
 
     std::vector<std::vector<int>> computeConfusionMatrix(
         const std::vector<std::vector<double>>& images,
         const std::vector<int>& labels) override {
-        std::vector<std::vector<int>> matrix(NUM_CLASSES, std::vector<int>(NUM_CLASSES, 0));
-        for (size_t i = 0; i < images.size(); ++i) {
-            int predicted = predict(images[i]);
-            matrix[labels[i]][predicted]++;
-        }
-        return matrix;
+        return computeConfusionMatrixFromPredictions(*this, images, labels);
     }
 
     void computeMetrics(const std::vector<std::vector<int>>& matrix,
                        std::vector<double>& precision,
                        std::vector<double>& recall,
                        std::vector<double>& f1) override {
-        precision.resize(NUM_CLASSES);
-        recall.resize(NUM_CLASSES);
-        f1.resize(NUM_CLASSES);
-        for (int c = 0; c < NUM_CLASSES; ++c) {
-            int tp = matrix[c][c];
-            int fp = 0, fn = 0;
-            for (int i = 0; i < NUM_CLASSES; ++i) {
-                if (i != c) {
-                    fp += matrix[i][c];
-                    fn += matrix[c][i];
-                }
-            }
-            precision[c] = (tp + fp > 0) ? static_cast<double>(tp) / (tp + fp) : 0.0;
-            recall[c] = (tp + fn > 0) ? static_cast<double>(tp) / (tp + fn) : 0.0;
-            f1[c] = (precision[c] + recall[c] > 0) ?
-                    2 * precision[c] * recall[c] / (precision[c] + recall[c]) : 0.0;
-        }
+        computePerClassMetricsFromConfusionMatrix(matrix, precision, recall, f1);
     }
 
     double computeAUC(const std::vector<std::vector<double>>& images,
                      const std::vector<int>& labels,
                      std::string& rocFilename) override {
-        rocFilename = getROCDataFilename();
-        std::vector<double> scores;
-        std::vector<int> binaryLabels;
-        scores.reserve(images.size());
-        binaryLabels.reserve(images.size());
-
-        for (size_t i = 0; i < images.size(); ++i) {
-            auto prob = predictProba(images[i]);
-            scores.push_back(prob[0]);
-            binaryLabels.push_back(labels[i] == 0 ? 1 : 0);
-        }
-
-        return writeRocDataAndComputeAUC(scores, binaryLabels, rocFilename);
+        return computeMacroAUCFromProbabilities(*this, images, labels, rocFilename);
     }
 
     std::string getROCDataFilename() const override {
@@ -2489,27 +2660,7 @@ public:
 
     void evaluateAndReport(const std::vector<std::vector<double>>& images,
                           const std::vector<int>& labels) override {
-        double acc = evaluate(images, labels);
-        auto matrix = computeConfusionMatrix(images, labels);
-        std::vector<double> precision, recall, f1;
-        computeMetrics(matrix, precision, recall, f1);
-
-        double avgPrecision = 0.0, avgRecall = 0.0, avgF1 = 0.0;
-        for (int c = 0; c < NUM_CLASSES; ++c) {
-            avgPrecision += precision[c];
-            avgRecall += recall[c];
-            avgF1 += f1[c];
-        }
-        avgPrecision /= NUM_CLASSES;
-        avgRecall /= NUM_CLASSES;
-        avgF1 /= NUM_CLASSES;
-
-        std::cout << "\n========== KNN Test Results ==========" << std::endl;
-        std::cout << "Accuracy:  " << std::fixed << std::setprecision(4) << acc * 100 << "%" << std::endl;
-        std::cout << "Precision: " << std::setprecision(4) << avgPrecision * 100 << "%" << std::endl;
-        std::cout << "Recall:    " << std::setprecision(4) << avgRecall * 100 << "%" << std::endl;
-        std::cout << "F1 Score:  " << std::setprecision(4) << avgF1 * 100 << "%" << std::endl;
-        std::cout << "========================================" << std::endl;
+        printEvaluationReport("KNN", *this, images, labels);
     }
 };
 
@@ -2744,63 +2895,26 @@ public:
 
     double evaluate(const std::vector<std::vector<double>>& images,
                    const std::vector<int>& labels) override {
-        int correct = 0;
-        for (size_t i = 0; i < images.size(); ++i) {
-            if (predict(images[i]) == labels[i]) correct++;
-        }
-        return static_cast<double>(correct) / images.size();
+        return computeAccuracyFromPredictions(*this, images, labels);
     }
 
     std::vector<std::vector<int>> computeConfusionMatrix(
         const std::vector<std::vector<double>>& images,
         const std::vector<int>& labels) override {
-        std::vector<std::vector<int>> matrix(NUM_CLASSES, std::vector<int>(NUM_CLASSES, 0));
-        for (size_t i = 0; i < images.size(); ++i) {
-            int predicted = predict(images[i]);
-            matrix[labels[i]][predicted]++;
-        }
-        return matrix;
+        return computeConfusionMatrixFromPredictions(*this, images, labels);
     }
 
     void computeMetrics(const std::vector<std::vector<int>>& matrix,
                        std::vector<double>& precision,
                        std::vector<double>& recall,
                        std::vector<double>& f1) override {
-        precision.resize(NUM_CLASSES);
-        recall.resize(NUM_CLASSES);
-        f1.resize(NUM_CLASSES);
-        for (int c = 0; c < NUM_CLASSES; ++c) {
-            int tp = matrix[c][c];
-            int fp = 0, fn = 0;
-            for (int i = 0; i < NUM_CLASSES; ++i) {
-                if (i != c) {
-                    fp += matrix[i][c];
-                    fn += matrix[c][i];
-                }
-            }
-            precision[c] = (tp + fp > 0) ? static_cast<double>(tp) / (tp + fp) : 0.0;
-            recall[c] = (tp + fn > 0) ? static_cast<double>(tp) / (tp + fn) : 0.0;
-            f1[c] = (precision[c] + recall[c] > 0) ?
-                    2 * precision[c] * recall[c] / (precision[c] + recall[c]) : 0.0;
-        }
+        computePerClassMetricsFromConfusionMatrix(matrix, precision, recall, f1);
     }
 
     double computeAUC(const std::vector<std::vector<double>>& images,
                      const std::vector<int>& labels,
                      std::string& rocFilename) override {
-        rocFilename = getROCDataFilename();
-        std::vector<double> scores;
-        std::vector<int> binaryLabels;
-        scores.reserve(images.size());
-        binaryLabels.reserve(images.size());
-
-        for (size_t i = 0; i < images.size(); ++i) {
-            auto prob = predictProba(images[i]);
-            scores.push_back(prob[0]);
-            binaryLabels.push_back(labels[i] == 0 ? 1 : 0);
-        }
-
-        return writeRocDataAndComputeAUC(scores, binaryLabels, rocFilename);
+        return computeMacroAUCFromProbabilities(*this, images, labels, rocFilename);
     }
 
     std::string getROCDataFilename() const override {
@@ -2809,27 +2923,7 @@ public:
 
     void evaluateAndReport(const std::vector<std::vector<double>>& images,
                           const std::vector<int>& labels) override {
-        double acc = evaluate(images, labels);
-        auto matrix = computeConfusionMatrix(images, labels);
-        std::vector<double> precision, recall, f1;
-        computeMetrics(matrix, precision, recall, f1);
-        
-        double avgPrecision = 0.0, avgRecall = 0.0, avgF1 = 0.0;
-        for (int c = 0; c < NUM_CLASSES; ++c) {
-            avgPrecision += precision[c];
-            avgRecall += recall[c];
-            avgF1 += f1[c];
-        }
-        avgPrecision /= NUM_CLASSES;
-        avgRecall /= NUM_CLASSES;
-        avgF1 /= NUM_CLASSES;
-        
-        std::cout << "\n======== Logistic Regression Test Results ========" << std::endl;
-        std::cout << "Accuracy:  " << std::fixed << std::setprecision(4) << acc * 100 << "%" << std::endl;
-        std::cout << "Precision: " << std::setprecision(4) << avgPrecision * 100 << "%" << std::endl;
-        std::cout << "Recall:    " << std::setprecision(4) << avgRecall * 100 << "%" << std::endl;
-        std::cout << "F1 Score:  " << std::setprecision(4) << avgF1 * 100 << "%" << std::endl;
-        std::cout << "========================================" << std::endl;
+        printEvaluationReport("Logistic Regression", *this, images, labels);
     }
 };
 
@@ -2978,10 +3072,10 @@ std::vector<std::pair<int, std::string>> ModelFactory::getAvailableModels() {
     return {
         {SVM, "Support Vector Machine (SVM) - linear baseline"},
         {FCNN, "Fully Connected Neural Network (FCNN) - backpropagation network"},
-        {CNN, "Convolutional Neural Network (CNN) - image feature model"},
+        {CNN, "Convolutional Neural Network (CNN) - true convolution + pooling model"},
         {LOGISTIC_REGRESSION, "Logistic Regression (LR) - softmax linear classifier"},
         {RANDOM_FOREST, "Random Forest (RF) - tree ensemble"},
-        {KNN, "K-Nearest Neighbors (KNN) - prototype voting"}
+        {KNN, "K-Nearest Neighbors (KNN) - exact sample-memory voting"}
     };
 }
 

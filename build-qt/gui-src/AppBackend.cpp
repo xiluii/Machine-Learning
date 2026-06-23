@@ -69,14 +69,14 @@ std::vector<ModelVisualSpec> AppBackend::visualSpecs() {
           "The final dense head produces ten logits which are normalized by Softmax."},
          {"Momentum optimizer", "Best accuracy in current report", "Nonlinear decision boundary"},
          {"#6d5bd0", "#7c6ee6", "#8b82f4", "#b5a8ff"}},
-        {ModelFactory::CNN, "CNN", "Simplified convolution-style pipeline in current project implementation.",
-         "Input(28x28) -> simplified feature extractor -> classifier head -> Softmax(10)",
-         {"Image input", "Feature maps", "Classifier head", "Probability output"},
+        {ModelFactory::CNN, "CNN", "Two-layer convolutional neural network with ReLU and max pooling.",
+         "Input(28x28) -> Conv(8,3x3) -> MaxPool -> Conv(16,3x3) -> MaxPool -> Dense(10) -> Softmax",
+         {"Image input", "Conv block 1", "Conv block 2", "Classifier head"},
          {"A 28 by 28 grayscale digit enters as a spatial image tensor.",
-          "The current code approximates a convolution-style feature extraction stage and preserves an image-first pipeline.",
-          "The extracted feature representation is consumed by a dense classification head.",
+          "The first convolution learns 8 local feature maps and the first max-pooling stage downsamples them.",
+          "The second convolution expands the representation to 16 feature maps before a second pooling stage.",
           "Ten normalized output probabilities summarize confidence for each digit class."},
-         {"Image-oriented pipeline", "Current scaffold can be upgraded later", "Useful for comparison"},
+         {"Learned convolution kernels", "ReLU activations", "Image-first classifier"},
          {"#4f8f8f", "#5ba7a4", "#78c1ba", "#9ce5db"}},
         {ModelFactory::LOGISTIC_REGRESSION, "Logistic Regression", "Single-layer Softmax classifier.",
          "Input(784) -> Linear projection -> Softmax(10)",
@@ -95,14 +95,14 @@ std::vector<ModelVisualSpec> AppBackend::visualSpecs() {
           "Predictions are aggregated through voting or averaged class probabilities."},
          {"Robust nonlinear baseline", "Native C++ training", "Larger persisted model"},
          {"#4b6a43", "#5e8650", "#7aa564", "#a2c57c"}},
-        {ModelFactory::KNN, "KNN", "Prototype-based nearest-neighbor classifier.",
-         "Input(784) -> prototype library -> k-nearest vote",
-         {"Input vector", "Prototype store", "Distance search", "Vote result"},
+        {ModelFactory::KNN, "KNN", "Exact nearest-neighbor classifier with full-sample storage.",
+         "Input(784) -> sample memory -> k-nearest vote",
+         {"Input vector", "Training memory", "Distance search", "Vote result"},
          {"The test image is flattened into a feature vector.",
-          "Training builds and stores a prototype memory from representative samples.",
-          "Inference compares the query against stored prototypes to find the nearest neighbors.",
+          "Training stores the full labeled training set as the reference memory.",
+          "Inference compares the query against all stored samples to find the nearest neighbors.",
           "The final class is decided by top-k voting over neighbor labels."},
-         {"Non-parametric baseline", "Cheap training", "Costly inference"},
+         {"Non-parametric baseline", "Exact neighbor search", "Costly inference"},
          {"#915f7d", "#aa6f93", "#c286ad", "#dea4ca"}}
     };
 }
@@ -159,12 +159,13 @@ TestResult AppBackend::testModel(const TestOptions& options) {
     result.rocDataFile = model->getROCDataFilename();
     result.rocCurve = readRocCurve(resolvePath(result.rocDataFile));
 
-    std::vector<double> precision;
-    std::vector<double> recall;
-    std::vector<double> f1;
-    model->computeMetrics(result.metrics.confusionMatrix, precision, recall, f1);
-    for (size_t i = 0; i < precision.size(); ++i) {
-        result.classMetrics.push_back({static_cast<int>(i), precision[i], recall[i], f1[i]});
+    for (size_t i = 0; i < result.metrics.perClassPrecision.size(); ++i) {
+        result.classMetrics.push_back({
+            static_cast<int>(i),
+            result.metrics.perClassPrecision[i],
+            result.metrics.perClassRecall[i],
+            result.metrics.perClassF1[i]
+        });
     }
     return result;
 }
